@@ -1,0 +1,45 @@
+{
+  "name": "credential-airlock",
+  "version": "0.1.0",
+  "description": "A self-hosted, OS-sealed credential firewall for AI agents. The agent never holds real keys.",
+  "license": "Apache-2.0",
+  "author": "ClassEve",
+  "private": true,
+  "keywords": [
+    "security",
+    "credentials",
+    "secrets",
+    "ai-agents",
+    "proxy",
+    "firewall",
+    "dpapi",
+    "vault"
+  ],
+  "bin": {
+    "airlock": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "airlock": "node dist/index.js",
+    "test": "npm run build && node test/unit.mjs && node test/e2e.mjs && node test/migration.mjs && node test/redteam.mjs",
+    "test:unit": "node test/unit.mjs",
+    "test:e2e": "node test/e2e.mjs",
+    "test:migration": "node test/migration.mjs",
+    "test:redteam": "node test/redteam.mjs",
+    "audit": "npm audit --omit=dev",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "dependencies": {
+    "node-forge": "1.4.0"
+  },
+  "devDependencies": {
+    "typescript": "5.7.2",
+    "@types/node": "^24.0.0",
+    "@types/node-forge": "1.3.11"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

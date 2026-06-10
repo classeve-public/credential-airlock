@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Credential Airlock</title>
+  <link rel="stylesheet" href="/style.css" />
+  <!--
+    NOTE: presets.js is intentionally NOT loaded here. The admin server only
+    serves /, /index.html, /app.js and /style.css; /presets.js would 404.
+    The canonical PRESETS array is inlined at the top of /app.js.
+  -->
+</head>
+<body>
+  <!-- Inline SVG icon sprite (no external assets). -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3Z"/></symbol>
+      <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M12 4a9 9 0 0 0-9 9 9 9 0 0 0 1.6 5.1.9.9 0 0 0 .8.4h13.2a.9.9 0 0 0 .8-.4A9 9 0 0 0 21 13a9 9 0 0 0-9-9Zm0 4 3 3"/></symbol>
+      <symbol id="i-key" viewBox="0 0 24 24"><path d="M14 7a4 4 0 1 0-4 4l-7 7v3h3l1-1v-2h2v-2h2l2-2a4 4 0 0 0 1-7Z"/><circle cx="15.5" cy="6.5" r="1"/></symbol>
+      <symbol id="i-doc" viewBox="0 0 24 24"><path d="M6 2h8l4 4v16H6z"/><path d="M14 2v4h4"/></symbol>
+      <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M9 12.5 11 15l5-6"/><circle cx="12" cy="12" r="9"/></symbol>
+      <symbol id="i-bot" viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="11" rx="2"/><path d="M12 8V4M9 14h.01M15 14h.01M2 13v2M22 13v2"/></symbol>
+      <symbol id="i-move" viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M8 7l4-4 4 4M8 17l4 4 4-4M7 8l-4 4 4 4M17 8l4 4-4 4"/></symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></symbol>
+      <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></symbol>
+    </defs>
+  </svg>
+
+  <!-- Unauthorized overlay (shown on 401). -->
+  <div id="authGate" class="auth-gate" hidden>
+    <div class="auth-card">
+      <svg class="auth-ico"><use href="#i-shield"/></svg>
+      <h2>Unauthorized</h2>
+      <p id="authGateMsg">Re-open the control panel using the URL printed in the terminal (it contains the token).</p>
+      <button id="authRetry" class="btn">Retry</button>
+    </div>
+  </div>
+
+  <!-- Toast region for transient errors/notices. -->
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <div class="app">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="brand">
+        <svg class="brand-ico"><use href="#i-shield"/></svg>
+        <div class="brand-txt">
+          <strong>Credential</strong>
+          <span>Airlock</span>
+        </div>
+      </div>
+      <nav class="nav" id="nav">
+        <button class="nav-item" data-view="dashboard"><svg><use href="#i-gauge"/></svg><span>Dashboard</span></button>
+        <button class="nav-item" data-view="secrets"><svg><use href="#i-key"/></svg><span>Secrets</span><em class="nav-count" id="navSecrets"></em></button>
+        <button class="nav-item" data-view="policy"><svg><use href="#i-doc"/></svg><span>Policy</span></button>
+        <button class="nav-item" data-view="audit"><svg><use href="#i-list"/></svg><span>Audit</span></button>
+        <button class="nav-item" data-view="approvals"><svg><use href="#i-check"/></svg><span>Approvals</span><em class="nav-badge" id="navApprovals" hidden>0</em></button>
+        <button class="nav-item" data-view="agents"><svg><use href="#i-bot"/></svg><span>Agents</span><em class="nav-count" id="navAgents"></em></button>
+        <button class="nav-item" data-view="migration"><svg><use href="#i-move"/></svg><span>Migration</span></button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="conn" id="conn"><span class="dot" id="connDot"></span><span id="connTxt">connecting…</span></div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <div class="main">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button class="hamburger" id="hamburger" aria-label="Toggle navigation"><svg><use href="#i-list"/></svg></button>
+          <h1 id="viewTitle">Dashboard</h1>
+        </div>
+        <div class="topbar-right">
+          <div class="master" title="Arm or disarm the credential firewall">
+            <span class="master-label" id="masterLabel">Airlock</span>
+            <button class="switch" id="masterToggle" role="switch" aria-checked="false" aria-label="Airlock master switch">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </button>
+            <span class="master-state" id="masterState">off</span>
+          </div>
+        </div>
+      </header>
+
+      <main class="content" id="content">
+
+        <!-- ===================== DASHBOARD ===================== -->
+        <section class="view" data-view="dashboard">
+          <div class="hero card">
+            <div class="hero-toggle">
+              <button class="bigswitch" id="bigToggle" role="switch" aria-checked="false" aria-label="Airlock">
+                <span class="bigswitch-track"><span class="bigswitch-thumb"></span></span>
+              </button>
+              <div class="hero-meta">
+                <div class="hero-title" id="heroState">Airlock is OFF</div>
+                <div class="hero-sub" id="heroSub">Agents cannot reach the network until the airlock is armed.</div>
+              </div>
+            </div>
+            <div class="proxy-url">
+              <span class="muted">Proxy</span>
+              <code id="proxyUrl">—</code>
+              <button class="icon-btn" data-copy-target="proxyUrl" title="Copy proxy URL"><svg><use href="#i-copy"/></svg></button>
+            </div>
+          </div>
+
+          <div class="grid">
+            <div class="card stat">
+              <div class="stat-head">Sealing</div>
+              <div class="stat-big" id="sealerKind">—</div>
+              <div class="stat-sub" id="sealerDesc"></div>
+              <div class="note warn" id="sealerWarn" hidden></div>
+            </div>
+            <div class="card stat">
+              <div class="stat-head">Secrets</div>
+              <div class="stat-big" id="statSecrets">0</div>
+              <div class="stat-sub">stored, write-only</div>
+            </div>
+            <div class="card stat">
+              <div class="stat-head">Agents</div>
+              <div class="stat-big" id="statAgents">0</div>
+              <div class="stat-sub" id="statAgentsSub">registered</div>
+            </div>
+            <div class="card stat">
+              <div class="stat-head">Audit chain</div>
+              <div class="stat-big" id="statAudit"><span class="pill">—</span></div>
+              <div class="stat-sub" id="statAuditSub"></div>
+            </div>
+            <div class="card stat">
+              <div class="stat-head">Migration</div>
+              <div class="stat-big" id="statMigration"><span class="pill">—</span></div>
+              <div class="stat-sub">2-of-3 recovery</div>
+            </div>
+            <div class="card stat ca-card">
+              <div class="stat-head">CA certificate</div>
+              <a class="btn" id="caDownload" href="/ca.crt" download><svg><use href="#i-download"/></svg> Download CA</a>
+              <div class="stat-sub">Trust this cert so agents can be inspected. <span class="muted" id="caPath"></span></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================== SECRETS ===================== -->
+        <section class="view" data-view="secrets" hidden>
+          <div class="row-split">
+            <div class="card">
+              <div class="card-head"><h2>Stored secrets</h2><span class="muted">values are never displayed</span></div>
+              <div class="table-wrap">
+                <table class="tbl" id="secretsTbl">
+                  <thead><tr><th>Name</th><th>Mode</th><th>Allowed hosts</th><th>Placeholder</th><th>Updated</th><th></th></tr></thead>
+                  <tbody id="secretsBody"><tr><td colspan="6" class="empty">No secrets yet.</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="card" id="addSecretCard">
+              <div class="card-head"><h2>Add / update secret</h2></div>
+              <form id="secretForm" class="form" autocomplete="off">
+                <label>Preset
+                  <select id="presetPick"><option value="">— custom —</option></select>
+                </label>
+                <p class="note" id="presetNote" hidden></p>
+                <label>Name
+                  <input type="text" id="sName" required placeholder="OPENAI_KEY" autocomplete="off" />
+                </label>
+                <label>Value <span class="muted">(write-only — never shown again)</span>
+                  <input type="password" id="sValue" required placeholder="sk-…" autocomplete="new-password" />
+                </label>
+                <label>Allowed hosts <span class="muted">(comma-separated globs)</span>
+                  <input type="text" id="sHosts" required placeholder="api.openai.com" autocomplete="off" />
+                </label>
+                <label>Injection mode
+                  <select id="sMode">
+                    <option value="header">header</option>
+                    <option value="placeholder">placeholder</option>
+                    <option value="query">query</option>
+                  </select>
+                </label>
+
+                <div class="mode-fields" data-mode="header">
+                  <label>Header name
+                    <input type="text" id="sHeader" placeholder="Authorization" autocomplete="off" />
+                  </label>
+                  <label>Value template <span class="muted">({{secret}} is replaced)</span>
+                    <input type="text" id="sTemplate" placeholder="Bearer {{secret}}" autocomplete="off" />
+                  </label>
+                </div>
+                <div class="mode-fields" data-mode="placeholder" hidden>
+                  <label>Placeholder <span class="muted">(dummy the agent sends)</span>
+                    <input type="text" id="sPlaceholder" placeholder="__OPENAI_KEY__" autocomplete="off" />
+                  </label>
+                  <label class="check"><input type="checkbox" id="sInjectBody" /> Also replace inside request body</label>
+                </div>
+                <div class="mode-fields" data-mode="query" hidden>
+                  <label>Query parameter
+                    <input type="text" id="sQueryParam" placeholder="key" autocomplete="off" />
+                  </label>
+                </div>
+
+                <label>Description <span class="muted">(optional)</span>
+                  <input type="text" id="sDesc" placeholder="prod key for the support bot" autocomplete="off" />
+                </label>
+                <div class="form-actions">
+                  <button type="submit" class="btn primary">Save secret</button>
+                </div>
+                <p class="note">Saving a secret automatically opens egress and an allow-rule for its hosts (still deny-by-default everywhere else).</p>
+              </form>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================== POLICY ===================== -->
+        <section class="view" data-view="policy" hidden>
+          <div class="card">
+            <div class="card-head"><h2>Policy</h2><span class="muted">deny-by-default · loopback control</span></div>
+            <p class="note">Edit the policy JSON and Save. <code>defaultAction</code> is always forced to <code>deny</code> server-side. <code>egressAllowlist</code> is the set of hosts that may be reached at all; <code>rules</code> decide allow / deny / require_approval, with optional <code>rateLimit</code> and <code>amountLimit</code>.</p>
+            <div id="policySummary" class="policy-summary"></div>
+            <textarea id="policyText" class="code" spellcheck="false" rows="22"></textarea>
+            <div class="form-actions">
+              <button class="btn" id="policyReload">Reload</button>
+              <button class="btn" id="policyFormat">Format JSON</button>
+              <button class="btn primary" id="policySave">Save policy</button>
+            </div>
+            <p class="err" id="policyErr" hidden></p>
+          </div>
+        </section>
+
+        <!-- ===================== AUDIT ===================== -->
+        <section class="view" data-view="audit" hidden>
+          <div class="card">
+            <div class="card-head">
+              <h2>Audit log</h2>
+              <div class="head-actions">
+                <input type="search" id="auditFilter" placeholder="filter…" class="filter" />
+                <button class="btn" id="auditVerify"><svg><use href="#i-check"/></svg> Verify chain</button>
+              </div>
+            </div>
+            <div id="auditVerifyResult" class="verify-result"></div>
+            <div class="table-wrap tall">
+              <table class="tbl mono" id="auditTbl">
+                <thead><tr><th>#</th><th>Time</th><th>Event</th><th>Method</th><th>Host / path</th><th>Decision</th><th>Reason</th><th>Injected</th></tr></thead>
+                <tbody id="auditBody"><tr><td colspan="8" class="empty">No audit entries.</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================== APPROVALS ===================== -->
+        <section class="view" data-view="approvals" hidden>
+          <div class="card">
+            <div class="card-head"><h2>Pending approvals</h2><span class="muted" id="approvalsHint">requests awaiting a human decision</span></div>
+            <div id="pendingList" class="approvals-list"><p class="empty">Nothing pending.</p></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>Recent decisions</h2></div>
+            <div class="table-wrap">
+              <table class="tbl"><thead><tr><th>Time</th><th>Host</th><th>Method</th><th>Summary</th><th>Status</th></tr></thead>
+                <tbody id="recentBody"><tr><td colspan="5" class="empty">No recent decisions.</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================== AGENTS ===================== -->
+        <section class="view" data-view="agents" hidden>
+          <div class="row-split">
+            <div class="card">
+              <div class="card-head"><h2>Agents</h2></div>
+              <p class="note">Launched agents run with the proxy + CA trust pre-wired; they only ever see dummy keys.</p>
+              <div id="agentsList" class="agents-list"><p class="empty">No agents registered.</p></div>
+            </div>
+            <div class="card">
+              <div class="card-head"><h2>Add agent</h2></div>
+              <form id="agentForm" class="form" autocomplete="off">
+                <label>Name <input type="text" id="aName" required placeholder="support-bot" autocomplete="off" /></label>
+                <label>Command <input type="text" id="aCommand" required placeholder="node" autocomplete="off" /></label>
+                <label>Arguments <span class="muted">(one per line)</span>
+                  <textarea id="aArgs" rows="3" placeholder="bot.js&#10;--prod" spellcheck="false"></textarea>
+                </label>
+                <label>Working dir <span class="muted">(optional)</span>
+                  <input type="text" id="aCwd" placeholder="C:\projects\bot" autocomplete="off" />
+                </label>
+                <label>Description <span class="muted">(optional)</span>
+                  <input type="text" id="aDesc" autocomplete="off" />
+                </label>
+                <div class="form-actions"><button type="submit" class="btn primary">Add agent</button></div>
+              </form>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================== MIGRATION ===================== -->
+        <section class="view" data-view="migration" hidden>
+          <div class="card narrow">
+            <div class="card-head"><h2>Migration &amp; recovery</h2></div>
+            <p class="note">Recovery is a deliberate <strong>2-of-3</strong> ceremony. The vault key is split into three shares: this machine (DPAPI/OS), a <strong>recovery passphrase</strong> you choose, and an <strong>offline share</strong> you print and store. Any two can restore the vault on a new machine — no single share is enough.</p>
+            <div id="migrationConfigured" class="note ok" hidden><svg><use href="#i-check"/></svg> Migration is already configured. Re-running would re-key the vault and invalidate the previous shares.</div>
+            <form id="migrationForm" class="form">
+              <label>Recovery passphrase <span class="muted">(min 12 characters)</span>
+                <input type="password" id="mPass" minlength="12" required autocomplete="new-password" placeholder="a long phrase only you know" />
+              </label>
+              <label>Confirm passphrase
+                <input type="password" id="mPass2" minlength="12" required autocomplete="new-password" />
+              </label>
+              <div class="form-actions"><button type="submit" class="btn primary">Set up migration</button></div>
+              <p class="err" id="migErr" hidden></p>
+            </form>
+
+            <div id="shareReveal" class="share-reveal" hidden>
+              <div class="note warn big">
+                <svg><use href="#i-warn"/></svg>
+                <div><strong>Write this down now.</strong> This offline share is shown <u>once</u> and is never stored or recoverable. Print it or copy it to a safe place. You will need it (plus either this machine or your passphrase) to recover the vault.</div>
+              </div>
+              <div class="share-box">
+                <code id="offlineShare"></code>
+                <button class="icon-btn" data-copy-target="offlineShare" title="Copy share"><svg><use href="#i-copy"/></svg></button>
+              </div>
+              <button class="btn" id="shareDone">I have stored it safely</button>
+            </div>
+          </div>
+        </section>
+
+      </main>
+
+      <footer class="footer">
+        Credential Airlock — your agents never hold real keys. Loopback-only control plane.
+      </footer>
+    </div>
+  </div>
+
+  <!-- Modal host (confirms + value prompts). -->
+  <div id="modalRoot" class="modal-root" hidden></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

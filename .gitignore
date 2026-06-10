@@ -1,0 +1,38 @@
+# ============================================================================
+#  SECURITY-CRITICAL .gitignore
+#  Never let secrets, vault material, or the local CA private key be committed.
+# ============================================================================
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Dependencies
+node_modules/
+
+# ---- Airlock runtime state (NEVER COMMIT) --------------------------------
+# Default data dir is %LOCALAPPDATA%\CredentialAirlock (outside the repo),
+# but guard against a misconfigured AIRLOCK_HOME pointing into the repo.
+.airlock/
+airlock-data/
+*.vault
+*.vault.enc
+vault.json
+vdk.seal
+*.seal
+*.mrk
+*.share
+ca-key.pem
+ca-cert.pem
+admin-token*
+audit.log
+audit.jsonl
+*.pem
+*.key
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+*.log

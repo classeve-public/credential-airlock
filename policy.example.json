@@ -1,0 +1,33 @@
+{
+  "defaultAction": "deny",
+  "egressAllowlist": ["api.openai.com", "api.anthropic.com", "api.stripe.com"],
+  "rules": [
+    {
+      "id": "openai-allow",
+      "description": "Allow OpenAI chat/responses calls",
+      "match": { "hosts": ["api.openai.com"], "paths": ["/v1/*"], "methods": ["GET", "POST"] },
+      "action": "allow",
+      "rateLimit": { "max": 120, "windowSec": 60 }
+    },
+    {
+      "id": "anthropic-allow",
+      "description": "Allow Anthropic Messages API",
+      "match": { "hosts": ["api.anthropic.com"], "paths": ["/v1/*"] },
+      "action": "allow",
+      "rateLimit": { "max": 120, "windowSec": 60 }
+    },
+    {
+      "id": "stripe-charge-cap",
+      "description": "Hard cap on charge amount (cents); over-limit is denied",
+      "match": { "hosts": ["api.stripe.com"], "paths": ["/v1/charges", "/v1/payment_intents"], "methods": ["POST"] },
+      "action": "allow",
+      "amountLimit": { "field": "amount", "max": 5000, "currency": "usd" }
+    },
+    {
+      "id": "stripe-refunds-approval",
+      "description": "Refunds require a human to approve in the local UI",
+      "match": { "hosts": ["api.stripe.com"], "paths": ["/v1/refunds"], "methods": ["POST"] },
+      "action": "require_approval"
+    }
+  ]
+}
