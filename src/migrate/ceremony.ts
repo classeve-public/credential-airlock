@@ -12,6 +12,7 @@
  */
 import { Paths, loadConfig, saveConfig } from '../config';
 import { createSealer, autoSealerKind } from '../crypto/sealer';
+import { SealerKind } from '../types';
 import { aesgcmDecrypt } from '../crypto/aesgcm';
 import { VAULT_AAD } from '../vault/vault';
 import {
@@ -32,6 +33,8 @@ export interface MigrateOptions {
   delaySec?: number;
   /** Optional out-of-band confirmation gate; return false to abort. */
   confirm?: () => Promise<boolean>;
+  /** Override the target sealer for deterministic tests and automation. */
+  targetSealerKind?: SealerKind;
   sealerPassphrase?: string; // for passphrase-sealer target machines
 }
 
@@ -55,7 +58,7 @@ export async function migrateImport(paths: Paths, opts: MigrateOptions): Promise
     };
   }
 
-  const targetSealer = createSealer(autoSealerKind(), { passphrase: opts.sealerPassphrase });
+  const targetSealer = createSealer(opts.targetSealerKind || autoSealerKind(), { passphrase: opts.sealerPassphrase });
 
   // Gather shares from the human factors first, then the machine share if present.
   const shares: Buffer[] = [];

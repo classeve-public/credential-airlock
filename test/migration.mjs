@@ -75,20 +75,21 @@ async function main() {
   //     deterministic on Linux/macOS instead of invoking a real Keychain prompt.
   process.env.AIRLOCK_SEALER = 'passphrase';
   process.env.AIRLOCK_PASSPHRASE = NEW_DAILY;
+  const targetSealer = { targetSealerKind: 'passphrase', sealerPassphrase: NEW_DAILY };
 
   // Negative 1: only the recovery passphrase, no offline share -> below threshold.
   const PC = paths(homeC);
-  const onlyPass = await migrateImport(PC, { passphrase: RECOVERY });
+  const onlyPass = await migrateImport(PC, { ...targetSealer, passphrase: RECOVERY });
   ok('negative: passphrase alone cannot migrate (need 2-of-3)', onlyPass.ok === false, JSON.stringify(onlyPass));
 
   // Negative 2: wrong recovery passphrase + correct offline share -> still 1 share.
   const PD = paths(homeDdir);
-  const wrongPass = await migrateImport(PD, { passphrase: 'totally-wrong-passphrase', offlineShare: setup.offlineShare });
+  const wrongPass = await migrateImport(PD, { ...targetSealer, passphrase: 'totally-wrong-passphrase', offlineShare: setup.offlineShare });
   ok('negative: wrong passphrase cannot migrate', wrongPass.ok === false, JSON.stringify(wrongPass));
 
   // Positive: recovery passphrase + offline share -> reconstructs and re-seals.
   const PB = paths(homeB);
-  const res = await migrateImport(PB, { passphrase: RECOVERY, offlineShare: setup.offlineShare });
+  const res = await migrateImport(PB, { ...targetSealer, passphrase: RECOVERY, offlineShare: setup.offlineShare });
   ok('migrate: succeeds with passphrase + offline share', res.ok === true, JSON.stringify(res));
   ok('migrate: did NOT rely on the old machine share', res.ok && !res.sharesUsed.includes('dpapi(local)'), JSON.stringify(res.sharesUsed));
 
