@@ -27,7 +27,7 @@ jobs:
       AIRLOCK_PASSPHRASE: ci-only-passphrase-not-a-real-secret-0123456789
       AIRLOCK_NO_OPEN: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # Build the TAG's tree, not the branch HEAD — so a workflow_dispatch
           # re-release attests exactly what the tag points at.

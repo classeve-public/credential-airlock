@@ -36,7 +36,7 @@ jobs:
       AIRLOCK_PASSPHRASE: ci-only-passphrase-not-a-real-secret-0123456789
       AIRLOCK_NO_OPEN: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -59,7 +59,7 @@ jobs:
     env:
       AIRLOCK_NO_OPEN: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -75,7 +75,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -93,7 +93,7 @@ jobs:
     env:
       AIRLOCK_NO_OPEN: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -112,7 +112,7 @@ jobs:
       AIRLOCK_PASSPHRASE: ci-only-passphrase-not-a-real-secret-0123456789
       AIRLOCK_NO_OPEN: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
