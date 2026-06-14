@@ -32,7 +32,7 @@ jobs:
           # Build the TAG's tree, not the branch HEAD — so a workflow_dispatch
           # re-release attests exactly what the tag points at.
           ref: ${{ inputs.tag || github.ref }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: npm
