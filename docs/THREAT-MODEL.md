@@ -177,7 +177,7 @@ These are properties of the code as built, not aspirations:
 
 ---
 
-## Known limitations / TODO hardening
+## Known Limitations And Planned Hardening
 
 Be honest about these in any review:
 
@@ -193,8 +193,9 @@ Be honest about these in any review:
 - **Supply chain is the dominant risk.** The only runtime dependency is
   `node-forge` (pinned `1.4.0`; `npm audit` clean); the integrity of it, of Node,
   and of PowerShell (used for DPAPI) is part of your trust base. Pin, review, and
-  prefer signed, reproducible builds. Not yet implemented: signed releases,
-  reproducible build attestation.
+  prefer signed, reproducible builds. Release artifacts include checksums, an SBOM,
+  and build-provenance attestation; signed release tags and independently
+  reproducible-build verification remain planned hardening.
 - **TLS interception requires trusting the local CA.** Agents must trust
   `airlock-ca.crt` (via `NODE_EXTRA_CA_CERTS` / `REQUESTS_CA_BUNDLE` or the OS
   store). The CA private key lives only inside the sealed vault, but a broadly

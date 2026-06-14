@@ -11,7 +11,7 @@ machine. Every outbound request is policy-checked and audited before it leaves.
 Built and maintained by **Classeve**. Windows-first. Node/TypeScript. You run
 it; Classeve never sees your credentials.
 
-> **Status: personal / single-operator use. Not yet third-party audited.**
+> **Status: public initial release for single-operator and trusted-team use. Not yet third-party audited.**
 > See [Before you put this in front of other people's credentials](#before-you-put-this-in-front-of-other-peoples-credentials) before you put it
 > in front of anyone else's secrets, and read the [Threat Model](docs/THREAT-MODEL.md) before
 > you trust it with yours. Internal review evidence (eight review rounds, 118 issues

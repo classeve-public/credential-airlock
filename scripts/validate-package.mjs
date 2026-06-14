@@ -62,7 +62,7 @@ for (const field of ['prepare', 'prepack', 'prepublishOnly', 'package:check', 's
   if (!pkg.scripts?.[field]) errors.push(`missing npm script: ${field}`);
 }
 
-for (const item of ['dist/', 'deploy/', 'docs/', 'public/', 'scripts/']) {
+for (const item of ['dist/', 'deploy/', 'docs/', 'public/']) {
   requirePackageFile(pkg, item);
 }
 

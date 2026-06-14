@@ -51,13 +51,15 @@ airlock doctor
 Use this for offline machines or pinned internal rollout:
 
 ```powershell
-npm pack
-npm install -g .\credential-airlock-0.1.0.tgz
+$version = "0.1.1"
+$url = "https://github.com/classeve-public/credential-airlock/releases/download/v$version/credential-airlock-$version.tgz"
+Invoke-WebRequest $url -OutFile ".\credential-airlock-$version.tgz"
+npm install -g ".\credential-airlock-$version.tgz"
 airlock doctor
 ```
 
-The release workflow publishes the same packed artifact to GitHub Releases and
-npm.
+The release workflow publishes the same packed artifact to GitHub Releases. It
+also publishes to npm when repository npm publishing credentials are configured.
 
 ## First Boot
 

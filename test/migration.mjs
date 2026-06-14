@@ -32,7 +32,7 @@ const ok = (name, cond, extra = '') => {
   }
 };
 
-const SECRET = 'sk-MIGRATION-SECRET-9f3a2b';
+const SECRET = 'DUMMY_MIGRATION_SECRET_9f3a2b';
 const RECOVERY = 'correct horse battery staple recovery';
 const OLD_DAILY = 'old-machine-daily-pass-AAAA';
 const NEW_DAILY = 'new-machine-daily-pass-BBBB';

@@ -4,7 +4,29 @@ All notable changes to Credential Airlock are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — launch hardening
+## [Unreleased]
+
+## [0.1.1] - 2026-06-14
+
+### Changed
+- Removed the unused `test/preview-daemon.mjs` helper from the public source tree.
+- Removed dev-only maintenance scripts from the shipped npm/GitHub tarball surface;
+  source checkout scripts remain available for CI, load testing, package validation,
+  and release smoke tests.
+- Reconciled launch, install, release, and threat-model documentation with the
+  actual `v0.1.x` public release line and the GitHub-release-first workflow.
+
+## [0.1.0] - 2026-06-14
+
+### Added
+- First public GitHub release by Classeve.
+- Release artifacts: packed tarball, CycloneDX SBOM, SHA-256 checksums, and
+  build-provenance attestation.
+- Public repository metadata, issue templates, pull request template, support,
+  conduct, release, install, deployment, pentest, audit, and launch-readiness
+  documentation.
+
+## 0.1.0-prelaunch - launch hardening
 
 ### Added
 - **CI matrix** (GitHub Actions): build + 209-assertion test suite + `npm audit`
@@ -150,7 +172,7 @@ findings. All fixes covered by 24 new test assertions (now 209 total, all green)
   RFC-7230 token regex is de-duplicated into one leaf module; and the redaction
   scrubber precomputes its needle set instead of re-deriving it per response chunk.
 
-## [0.1.0] — 2026-05-29
+## 0.1.0-dev - 2026-05-29
 
 ### Added
 - Initial working build (v0–v2): loopback MITM forward proxy with deny-by-default
@@ -165,5 +187,6 @@ findings. All fixes covered by 24 new test assertions (now 209 total, all green)
   key-leak (now fails closed) and node-forge CVEs (upgraded to 1.4.0,
   `npm audit` clean). Full evidence in [docs/AUDIT.md](docs/AUDIT.md).
 
-[Unreleased]: https://github.com/classeve-public/credential-airlock/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/classeve-public/credential-airlock/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/classeve-public/credential-airlock/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/classeve-public/credential-airlock/releases/tag/v0.1.0

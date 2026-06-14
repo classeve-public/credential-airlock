@@ -6,7 +6,7 @@ security tool ships with — but only at items we can actually achieve and verif
 
 ## 1. What we are launching
 
-**v1.0 — self-hosted, open-source credential firewall for AI agents**, for
+**v0.1.x public release line — self-hosted, open-source credential firewall for AI agents**, for
 **single operators and trusted teams** running it on their own machines/infra.
 
 What that posture means, stated honestly:
@@ -77,7 +77,7 @@ Legend: **[Gate]** = blocks launch · **[Stretch]** = better-than-industry, not 
 ### F. Independent validation (the honest gate)
 | Criterion | Industry baseline | Our bar | Status |
 |---|---|---|---|
-| Internal adversarial review | rarely | **7 rounds** multi-agent audit (incl. fresh-perspective + advanced-internals passes), every finding re-verified against code | **[Stretch]** ✅ |
+| Internal adversarial review | rarely | **8 rounds** multi-agent audit (incl. fresh-perspective + advanced-internals passes), every finding re-verified against code | **[Stretch]** ✅ |
 | Third-party penetration test | varies (often post-launch) | **turnkey pentest package** prepared ([PENTEST.md](PENTEST.md)); the test itself is **the gate before holding others' keys or any public security guarantee** | ⛔ **external — not done** |
 
 ## 3. The one thing we cannot self-certify
@@ -85,7 +85,7 @@ Legend: **[Gate]** = blocks launch · **[Stretch]** = better-than-industry, not 
 A literal **independent third-party penetration test** cannot be performed by the
 author. What we *did* do:
 
-1. Pushed internal adversarial review as far as it goes (7 rounds, every finding
+1. Pushed internal adversarial review as far as it goes (8 rounds, every finding
    reproduced against the compiled build).
 2. Wrote [PENTEST.md](PENTEST.md) so an external firm can stand up a target and
    start attacking the documented trust boundary in under an hour.
@@ -99,4 +99,4 @@ author. What we *did* do:
   production credentials under guarantee, **until item F (external pentest) is
   signed off.**
 
-We are at **GO** for the v1.0 posture in §1.
+We are at **GO** for the v0.1.x public-release posture in section 1.
