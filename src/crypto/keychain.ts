@@ -15,10 +15,11 @@ import * as crypto from 'crypto';
 import { Sealer, SealerInfo } from '../types';
 
 const SERVICE = 'credential-airlock';
+const KEYCHAIN_TIMEOUT_MS = 30_000;
 
 function sec(args: string[], input?: string): { status: number; stdout: string; stderr: string } {
-  const res = spawnSync('security', args, { input, encoding: 'utf8' });
-  return { status: res.status ?? 1, stdout: res.stdout || '', stderr: res.stderr || '' };
+  const res = spawnSync('security', args, { input, encoding: 'utf8', timeout: KEYCHAIN_TIMEOUT_MS });
+  return { status: res.status ?? 1, stdout: res.stdout || '', stderr: res.stderr || res.error?.message || '' };
 }
 
 export class KeychainSealer implements Sealer {
