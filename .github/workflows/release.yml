@@ -54,6 +54,10 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN is not configured; skipping npm publish and continuing with the GitHub Release."
+            exit 0
+          fi
           PKG_NAME="$(node -p "require('./package.json').name")"
           PKG_VERSION="$(node -p "require('./package.json').version")"
           if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
