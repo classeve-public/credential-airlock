@@ -34,6 +34,8 @@ const ok = (name, cond, extra = '') => {
 
 const SECRET = 'sk-MIGRATION-SECRET-9f3a2b';
 const RECOVERY = 'correct horse battery staple recovery';
+const OLD_DAILY = 'old-machine-daily-pass-AAAA';
+const NEW_DAILY = 'new-machine-daily-pass-BBBB';
 
 async function main() {
   const { Runtime } = D('runtime.js');
@@ -48,7 +50,7 @@ async function main() {
 
   // --- Old machine: passphrase sealer, set up migration ---
   process.env.AIRLOCK_SEALER = 'passphrase';
-  process.env.AIRLOCK_PASSPHRASE = 'old-machine-daily-pass-AAAA';
+  process.env.AIRLOCK_PASSPHRASE = OLD_DAILY;
   const PA = paths(homeA);
   const a = await Runtime.initNew(PA);
   a.addOrUpdateSecret({
@@ -67,11 +69,12 @@ async function main() {
   fs.cpSync(homeA, homeC, { recursive: true });
   fs.cpSync(homeA, homeDdir, { recursive: true });
 
-  // --- New machine: the old machine-bound share is useless here. Use the dpapi
-  //     sealer (autoSealerKind on Windows) as the NEW machine's sealer so the
-  //     old passphrase-sealed share cannot unseal -> forces both human factors. ---
-  delete process.env.AIRLOCK_SEALER;
-  delete process.env.AIRLOCK_PASSPHRASE;
+  // --- New machine: use a different passphrase sealer to simulate a different
+  //     machine/account. The old passphrase-sealed share cannot unseal with this
+  //     new sealer -> migration must use both human factors. This keeps CI
+  //     deterministic on Linux/macOS instead of invoking a real Keychain prompt.
+  process.env.AIRLOCK_SEALER = 'passphrase';
+  process.env.AIRLOCK_PASSPHRASE = NEW_DAILY;
 
   // Negative 1: only the recovery passphrase, no offline share -> below threshold.
   const PC = paths(homeC);
@@ -91,7 +94,7 @@ async function main() {
 
   // --- Confirm the ACTUAL secret value survived on the new machine ---
   if (res.ok) {
-    const b = await Runtime.open(PB);
+    const b = await Runtime.open(PB, { passphrase: NEW_DAILY });
     const inj = b.vault.getInjectors().find((x) => x.name === 'svc');
     ok('migrate: secret value recovered intact on the new machine', !!inj && inj.value === SECRET, inj ? '(value mismatch)' : '(secret missing)');
     ok('migrate: secret metadata intact (allowed host)', !!inj && inj.allowedHosts.includes('api.example.com'));
