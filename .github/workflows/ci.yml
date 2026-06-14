@@ -1,33 +1,122 @@
-name: CI
+name: ci
 
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Weekly canary: re-run the full matrix + npm audit so a NEW advisory against
+    # our pinned deps fails loudly even with no code change.
+    - cron: '0 7 * * 1'
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  build-and-test:
-    name: Build & test (Windows)
-    runs-on: windows-latest
-
+  # Deterministic, OS-independent matrix. Forces the passphrase sealer so the
+  # full security suite runs identically on Linux and macOS. This proves the
+  # proxy / policy / audit / crypto / migration code paths on every OS.
+  test:
+    name: test (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ['20', '22', '24']
+    env:
+      AIRLOCK_SEALER: passphrase
+      AIRLOCK_PASSPHRASE: ci-only-passphrase-not-a-real-secret-0123456789
+      AIRLOCK_NO_OPEN: '1'
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run package:check
+      - run: npm test
+      - run: npm run audit
 
-      - name: Install dependencies
-        run: npm ci
+  # The real Windows daily-use path: DPAPI sealer (no AIRLOCK_SEALER override).
+  windows:
+    name: test (windows-latest DPAPI, node ${{ matrix.node }})
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22', '24']
+    env:
+      AIRLOCK_NO_OPEN: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run package:check
+      - run: npm test
+      - run: npm run audit
 
-      - name: Build
-        run: npm run build
+  package-smoke:
+    name: package smoke (ubuntu, node 22)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run smoke:install
 
-      - name: Test
-        run: npm test
+  # Best-effort real Keychain round-trip on macOS. Headless Keychain can be
+  # finicky, so this is non-blocking signal (flagged for the external pentest).
+  keychain-smoke:
+    name: macOS Keychain sealer smoke (best-effort)
+    runs-on: macos-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    env:
+      AIRLOCK_NO_OPEN: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: node test/keychain.smoke.mjs
+
+  # Sustained-load no-leak / bounded-memory soak as launch evidence.
+  loadtest:
+    name: load / no-leak soak (ubuntu, node 22)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      AIRLOCK_SEALER: passphrase
+      AIRLOCK_PASSPHRASE: ci-only-passphrase-not-a-real-secret-0123456789
+      AIRLOCK_NO_OPEN: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: node scripts/loadtest.mjs

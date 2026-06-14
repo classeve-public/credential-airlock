@@ -12,16 +12,18 @@ import * as fs from 'fs';
 import { Paths, loadConfig, saveConfig, defaultConfig, isInitialized } from './config';
 import { AirlockConfig, Policy, InjectionSpec, AgentProfile, Sealer, SealerKind } from './types';
 import { createSealer, autoSealerKind } from './crypto/sealer';
-import { Vault } from './vault/vault';
+import { aesgcmDecrypt } from './crypto/aesgcm';
+import { Vault, VAULT_AAD } from './vault/vault';
 import { PolicyEngine } from './policy/policy';
 import { Approvals } from './policy/approvals';
 import { AuditLog } from './audit/audit';
 import { AirlockProxy } from './proxy/proxy';
 import { AgentLauncher } from './agents/launcher';
 import { setupMigration, loadManifest } from './vault/mrk';
-import { readJson, writeJson, atomicWrite, readFileOpt, ensureDir } from './util/fsx';
+import { readJson, writeJson, atomicWrite, readFileOpt, ensureDir, exists } from './util/fsx';
 import { randomId } from './util/ids';
 import { log } from './util/logger';
+import { assertInjectableSecret } from './util/secret-validate';
 
 export function defaultPolicy(): Policy {
   return { defaultAction: 'deny', egressAllowlist: [], rules: [] };
@@ -119,6 +121,31 @@ function lockRelease(lockPath: string, fd: number): void {
   }
 }
 
+/**
+ * If the single-writer lock names a process that is currently alive, return its
+ * pid (a daemon is running); otherwise null. Read-only — used by `health` and
+ * `restore` to detect a live airlock without taking the lock.
+ */
+export function runningPid(paths: Paths): number | null {
+  const raw = readFileOpt(paths.lock);
+  const pid = raw ? Number(raw.toString().trim()) : NaN;
+  return Number.isFinite(pid) && pid > 0 && isAlive(pid) ? pid : null;
+}
+
+/**
+ * Acquire/release the single-writer lock for a one-shot mutating CLI op that does
+ * not build a full Runtime (e.g. `restore`). `acquire` throws if a live daemon
+ * holds the lock — atomic, unlike a runningPid pre-check, so it also blocks a
+ * daemon that tries to start mid-operation.
+ */
+export function acquireWriteLock(paths: Paths): number {
+  ensureDir(paths.root); // the lock file's parent must exist (e.g. restoring into a fresh/wiped dir)
+  return lockAcquire(paths.lock);
+}
+export function releaseWriteLock(paths: Paths, fd: number): void {
+  lockRelease(paths.lock, fd);
+}
+
 export interface SecretInput {
   name: string;
   placeholder: string;
@@ -147,7 +174,17 @@ export class Runtime {
   }
 
   // --- lifecycle ----------------------------------------------------------
-  static async initNew(paths: Paths, opts?: { passphrase?: string }): Promise<Runtime> {
+  static async initNew(paths: Paths, opts?: { passphrase?: string }, repair = true): Promise<Runtime> {
+    // Recover from a torn first-init: if a prior `init` wrote the vault but crashed
+    // before config.json, isInitialized() reports false yet Vault.create would throw
+    // an opaque "a vault already exists" — a contradictory dead-end. Give the operator
+    // an actionable remedy instead (the partial vault is fresh and empty).
+    if (!exists(paths.config) && (exists(paths.vaultEnc) || exists(paths.vdkSeal))) {
+      throw new Error(
+        `interrupted initialization at ${paths.root}: a sealed vault exists but config.json is missing. ` +
+          `Remove ${paths.vaultEnc} and ${paths.vdkSeal} (a fresh init created no secrets yet) and re-run \`airlock init\`.`
+      );
+    }
     const cfg = defaultConfig();
     // AIRLOCK_SEALER is honored ONLY here (first init). Record the ACTUAL kind so
     // open() always rebuilds the exact sealer that protects the vault.
@@ -157,17 +194,23 @@ export class Runtime {
     const vault = await Vault.create(paths, sealer);
     saveConfig(paths, cfg);
     writeJson(paths.policy, defaultPolicy());
-    const rt = await Runtime.attach(paths, cfg, sealer, vault);
+    const rt = await Runtime.attach(paths, cfg, sealer, vault, repair);
     rt.audit.append({ event: 'system', reason: 'airlock initialized', detail: { sealer: sealer.info.kind } });
     return rt;
   }
 
-  static async open(paths: Paths, opts?: { passphrase?: string }): Promise<Runtime> {
+  /**
+   * Open read-only by default: `repair=false` means the audit log is opened
+   * without the open-time truncate/tip-write, so a read-only command (status,
+   * audit --verify, health --deep, secret list) never mutates a log that a live
+   * daemon owns. `openOrInit` (which holds the single-writer lock) passes true.
+   */
+  static async open(paths: Paths, opts?: { passphrase?: string }, repair = false): Promise<Runtime> {
     const cfg = loadConfig(paths);
     if (!cfg) throw new Error('not initialized — run `airlock init`');
     const sealer = createSealer(cfg.sealer, opts);
     const vault = await Vault.open(paths, sealer);
-    return Runtime.attach(paths, cfg, sealer, vault);
+    return Runtime.attach(paths, cfg, sealer, vault, repair);
   }
 
   /**
@@ -180,7 +223,8 @@ export class Runtime {
     const fd = lockAcquire(paths.lock);
     let rt: Runtime;
     try {
-      rt = isInitialized(paths) ? await Runtime.open(paths, opts) : await Runtime.initNew(paths, opts);
+      // We hold the single-writer lock here, so open-time audit repair is safe.
+      rt = isInitialized(paths) ? await Runtime.open(paths, opts, true) : await Runtime.initNew(paths, opts, true);
     } catch (e) {
       lockRelease(paths.lock, fd);
       throw e;
@@ -189,7 +233,7 @@ export class Runtime {
     return rt;
   }
 
-  private static async attach(paths: Paths, cfg: AirlockConfig, sealer: Sealer, vault: Vault): Promise<Runtime> {
+  private static async attach(paths: Paths, cfg: AirlockConfig, sealer: Sealer, vault: Vault, repair: boolean): Promise<Runtime> {
     // Enforce loopback as an invariant regardless of config.json edits.
     cfg.adminHost = coerceLoopbackHost(cfg.adminHost, 'adminHost');
     cfg.proxyHost = coerceLoopbackHost(cfg.proxyHost, 'proxyHost');
@@ -203,7 +247,7 @@ export class Runtime {
     }
     policyData.defaultAction = 'deny'; // enforce invariant regardless of file edits
     const engine = new PolicyEngine(policyData);
-    const audit = new AuditLog(paths);
+    const audit = new AuditLog(paths, repair);
     const approvals = new Approvals();
     const rt = new Runtime(paths, cfg, sealer, vault, engine, audit, approvals);
     rt.writeCaFiles();
@@ -289,12 +333,16 @@ export class Runtime {
       REQUESTS_CA_BUNDLE: this.caBundlePath,
       SSL_CERT_FILE: this.caBundlePath,
       CURL_CA_BUNDLE: this.caBundlePath,
+      GIT_SSL_CAINFO: this.caBundlePath,
       AIRLOCK_ACTIVE: '1',
     };
   }
 
   // --- secrets (with policy maintenance) ---------------------------------
   addOrUpdateSecret(input: SecretInput): void {
+    // Vault.setSecret validates injectability and THROWS before persisting, so a
+    // rejected secret never reaches maintainPolicyForSecret below (no dangling
+    // egress entry / allow-rule for a secret that was refused).
     this.vault.setSecret(
       {
         name: input.name,
@@ -310,8 +358,28 @@ export class Runtime {
   }
 
   rotateSecret(name: string, value: string): void {
+    // Vault.rotateSecret validates the new value against the existing injection
+    // spec (and throws 'no such secret' first if the name is unknown).
     this.vault.rotateSecret(name, value);
     this.refreshProxyCreds();
+  }
+
+  /**
+   * Best-effort integrity sweep: list any stored secret whose value can no longer
+   * be injected cleanly (e.g. a vault RESTORED from an older build that predates
+   * set-time validation). The proxy fails closed on these at forward time; this
+   * surfaces them to the operator. Never throws and never returns secret values.
+   */
+  validateInjectors(): { name: string; reason: string }[] {
+    const bad: { name: string; reason: string }[] = [];
+    for (const inj of this.vault.getInjectors()) {
+      try {
+        assertInjectableSecret(inj.value, inj.injection, inj.placeholder);
+      } catch (e) {
+        bad.push({ name: inj.name, reason: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return bad;
   }
 
   deleteSecret(name: string): void {
@@ -350,6 +418,15 @@ export class Runtime {
 
   savePolicy(p: Policy): void {
     p.defaultAction = 'deny';
+    // Sanitize each rule's action on write: an unrecognized value (typo, hand-edit,
+    // a bad programmatic producer) must never persist as something the proxy could
+    // honor as allow. Coerce it to 'deny' (the eval path coerces too, defense-in-depth).
+    for (const r of p.rules || []) {
+      if (r.action !== 'allow' && r.action !== 'deny' && r.action !== 'require_approval') {
+        log.warn(`policy rule '${r.id}' has an unrecognized action; coercing to deny`, { action: String(r.action) });
+        r.action = 'deny';
+      }
+    }
     this.policy.setPolicy(p);
     writeJson(this.paths.policy, p);
   }
@@ -389,7 +466,29 @@ export class Runtime {
   // --- migration ----------------------------------------------------------
   async setupMigration(passphrase: string): Promise<{ offlineShare: string }> {
     const { result, vdk } = await setupMigration(this.paths, this.sealer, { passphrase });
+    // 1) Re-key the vault to the new MRK-derived VDK FIRST (mrk.setupMigration has
+    //    written the shares but deliberately NOT the manifest yet).
     await this.vault.rekey(vdk, this.sealer);
+    // 2) Persist the manifest LAST — only now does its vdkSalt describe a VDK the
+    //    vault has actually been re-keyed to. A crash before this leaves no manifest
+    //    (migrationConfigured() stays false), so the operator just re-runs setup
+    //    instead of being left with a silently-unrecoverable backup set.
+    writeJson(this.paths.manifest, result.manifest);
+    // 3) Self-check: confirm vault.enc actually decrypts under the new VDK the
+    //    manifest names, before reporting success.
+    const enc = readFileOpt(this.paths.vaultEnc);
+    let selfOk = false;
+    if (enc) {
+      try {
+        aesgcmDecrypt(vdk, enc, VAULT_AAD).fill(0);
+        selfOk = true;
+      } catch {
+        selfOk = false;
+      }
+    }
+    if (!selfOk) {
+      throw new Error('migration self-check failed: the vault did not re-key cleanly — run `airlock migrate setup` again');
+    }
     this.audit.append({ event: 'migration', reason: 'migration shares created (2-of-3)', detail: { threshold: 2, total: 3 } });
     return { offlineShare: result.offlineShare };
   }

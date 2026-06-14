@@ -10,6 +10,7 @@ import { Sealer, VaultData, SecretMeta, SecretWithValue, InjectionSpec } from '.
 import { aesgcmEncrypt, aesgcmDecrypt, randomKey } from '../crypto/aesgcm';
 import { atomicWrite, readFileOpt, exists } from '../util/fsx';
 import { registerRedaction, clearRedactions } from '../util/logger';
+import { assertInjectableSecret } from '../util/secret-validate';
 import { generateCA, CaMaterial } from '../ca/ca';
 
 export const VAULT_AAD = Buffer.from('credential-airlock/vault/v1', 'utf8');
@@ -103,6 +104,12 @@ export class Vault {
   // --- secrets (WRITE-ONLY; no reveal) -----------------------------------
   setSecret(meta: Omit<SecretMeta, 'createdAt' | 'updatedAt'>, value: string): void {
     if (!value) throw new Error('secret value must not be empty');
+    // Reject up front a secret that could not be injected cleanly (control chars /
+    // >0xFF in a header-bound value, invalid header name, lone surrogate). Sealing
+    // such a value yields a credential that 502-black-holes — or CRLF-smuggles —
+    // at forward time. This is the single chokepoint every write path funnels
+    // through (CLI, admin API), so all of them inherit the check.
+    assertInjectableSecret(value, meta.injection, meta.placeholder);
     const now = new Date().toISOString();
     const existing = this.data.secrets[meta.name];
     const record: SecretWithValue = {
@@ -120,6 +127,9 @@ export class Vault {
   rotateSecret(name: string, newValue: string): void {
     const s = this.data.secrets[name];
     if (!s) throw new Error(`no such secret: ${name}`);
+    // Same injectability gate as setSecret, against the EXISTING secret's
+    // injection spec/placeholder (rotation only changes the value).
+    assertInjectableSecret(newValue, s.injection, s.placeholder);
     s.value = newValue;
     s.lastRotatedAt = new Date().toISOString();
     s.updatedAt = s.lastRotatedAt;

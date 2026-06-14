@@ -1,0 +1,86 @@
+name: credential-airlock
+
+# Hardened, loopback-only deployment. The agent runs as a SIDECAR sharing the
+# airlock's network namespace, so it reaches the proxy on 127.0.0.1 while the
+# proxy stays unpublished. Provide the sealer passphrase as a Docker secret.
+#
+#   1) printf '%s' 'a-long-random-passphrase' > airlock_passphrase.txt
+#   2) docker compose up --build
+#
+# See docs/DEPLOY.md.
+
+services:
+  # One-shot: make the named volume writable by the distroless non-root uid.
+  airlock-init:
+    image: alpine:3
+    command: ["sh", "-c", "chown -R 65532:65532 /data"]
+    volumes:
+      - airlock-data:/data
+    restart: "no"
+
+  airlock:
+    build: .
+    image: credential-airlock:local
+    command: ["start"]
+    depends_on:
+      airlock-init:
+        condition: service_completed_successfully
+    user: "65532:65532"
+    environment:
+      AIRLOCK_HOME: /data
+      AIRLOCK_NO_OPEN: "1"
+      AIRLOCK_SEALER: passphrase
+      AIRLOCK_PASSPHRASE_FILE: /run/secrets/airlock_passphrase
+    secrets:
+      - airlock_passphrase
+    # --- hardening ---
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - airlock-data:/data
+    # Deliberately NO published ports: the control plane + proxy are loopback-only.
+    # --deep also verifies the vault opens and the audit chain is intact (not just
+    # that the port is listening). It is read-only (never mutates the audit log),
+    # so it is safe to run alongside the daemon; the timeout covers the scrypt unseal.
+    healthcheck:
+      test: ["CMD", "/nodejs/bin/node", "/app/dist/index.js", "health", "--deep"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+      start_period: 20s
+
+  # Example agent sidecar. Replace image + command with your real agent. It shares
+  # the airlock's loopback, so HTTP(S)_PROXY=127.0.0.1:7788 routes through it.
+  agent:
+    image: alpine:3
+    command:
+      - sh
+      - -c
+      - "echo 'Point your agent at http://127.0.0.1:7788 and trust /data/airlock-ca.crt'; sleep infinity"
+    network_mode: "service:airlock"
+    # Wait for the airlock to be HEALTHY (vault open, CA written) before the agent
+    # starts, so /data/airlock-ca.crt exists when the agent first makes a request.
+    depends_on:
+      airlock:
+        condition: service_healthy
+    environment:
+      HTTP_PROXY: http://127.0.0.1:7788
+      HTTPS_PROXY: http://127.0.0.1:7788
+      NO_PROXY: localhost,127.0.0.1
+      NODE_EXTRA_CA_CERTS: /data/airlock-ca.crt
+      REQUESTS_CA_BUNDLE: /data/airlock-ca.crt
+      CURL_CA_BUNDLE: /data/airlock-ca.crt
+    volumes:
+      - airlock-data:/data:ro
+
+volumes:
+  airlock-data:
+
+secrets:
+  airlock_passphrase:
+    file: ./airlock_passphrase.txt

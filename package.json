@@ -1,33 +1,73 @@
 {
   "name": "credential-airlock",
   "version": "0.1.0",
-  "description": "A self-hosted, OS-sealed credential firewall for AI agents. The agent never holds real keys.",
+  "description": "A self-hosted, OS-sealed credential firewall for AI agents (DPAPI/Keychain/passphrase; not a hardware TPM). The agent never holds real keys.",
   "license": "Apache-2.0",
-  "author": "ClassEve",
-  "private": true,
+  "author": "Classeve",
+  "contributors": [
+    "Ranjit Barnala"
+  ],
+  "homepage": "https://github.com/classeve-public/credential-airlock#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/classeve-public/credential-airlock.git"
+  },
+  "bugs": {
+    "url": "https://github.com/classeve-public/credential-airlock/issues"
+  },
   "keywords": [
-    "security",
+    "ai",
+    "agent",
     "credentials",
     "secrets",
-    "ai-agents",
     "proxy",
-    "firewall",
+    "vault",
     "dpapi",
-    "vault"
+    "keychain",
+    "security",
+    "credential-firewall"
   ],
   "bin": {
     "airlock": "dist/index.js"
   },
   "main": "dist/index.js",
+  "files": [
+    "dist/",
+    "deploy/",
+    "docs/",
+    "public/",
+    "scripts/",
+    "README.md",
+    "NOTICE.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "policy.example.json",
+    "Dockerfile",
+    "docker-compose.yml"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "airlock": "node dist/index.js",
-    "test": "npm run build && node test/unit.mjs && node test/e2e.mjs && node test/migration.mjs && node test/redteam.mjs",
+    "prepare": "npm run build",
+    "prepack": "npm run clean && npm run build && npm run package:check",
+    "prepublishOnly": "npm test && npm run audit && npm run smoke:install",
+    "package:check": "node scripts/validate-package.mjs",
+    "smoke:install": "node scripts/smoke-install.mjs",
+    "pack:dry": "npm pack --dry-run",
+    "test": "npm run build && node test/unit.mjs && node test/e2e.mjs && node test/migration.mjs && node test/redteam.mjs && node test/backup.mjs && node test/wincmd.spawn.mjs",
     "test:unit": "node test/unit.mjs",
     "test:e2e": "node test/e2e.mjs",
     "test:migration": "node test/migration.mjs",
     "test:redteam": "node test/redteam.mjs",
+    "test:backup": "node test/backup.mjs",
+    "test:wincmd": "node test/wincmd.spawn.mjs",
+    "loadtest": "npm run build && node scripts/loadtest.mjs",
     "audit": "npm audit --omit=dev",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
   },

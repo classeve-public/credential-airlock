@@ -1,0 +1,71 @@
+# Credential Airlock — hardened systemd unit (Linux host install, passphrase sealer).
+#
+# Setup:
+#   sudo useradd --system --home-dir /var/lib/credential-airlock --shell /usr/sbin/nologin airlock
+#   npm install -g credential-airlock
+#   NPM_ROOT="$(npm root -g)"
+#   sudo mkdir -p /opt/credential-airlock
+#   sudo cp -a "$NPM_ROOT/credential-airlock/." /opt/credential-airlock/
+#   sudo mkdir -p /etc/credential-airlock
+#   printf '%s' 'a-long-random-passphrase' | sudo tee /etc/credential-airlock/passphrase >/dev/null
+#   sudo chmod 600 /etc/credential-airlock/passphrase
+#   sudo cp deploy/airlock.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now airlock
+#
+# The passphrase is delivered via systemd's LoadCredential (root-only, not in the
+# unit text, not in the process environment dump) and read by AIRLOCK_PASSPHRASE_FILE.
+
+[Unit]
+Description=Credential Airlock — credential firewall for AI agents
+Documentation=https://github.com/classeve-public/credential-airlock
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=airlock
+Group=airlock
+ExecStart=/usr/bin/node /opt/credential-airlock/dist/index.js start
+Restart=on-failure
+RestartSec=2
+
+Environment=NODE_ENV=production
+Environment=AIRLOCK_NO_OPEN=1
+Environment=AIRLOCK_HOME=/var/lib/credential-airlock
+Environment=AIRLOCK_SEALER=passphrase
+LoadCredential=airlock_passphrase:/etc/credential-airlock/passphrase
+Environment=AIRLOCK_PASSPHRASE_FILE=%d/airlock_passphrase
+
+# --- sandboxing (least privilege) ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount
+CapabilityBoundingSet=
+AmbientCapabilities=
+# State dir (the sealed vault, CA, audit) — the only writable path.
+StateDirectory=credential-airlock
+ReadWritePaths=/var/lib/credential-airlock
+# Network: the airlock MUST reach upstream APIs, so egress is NOT blocked here —
+# deny-by-default egress is enforced in-app per allowlisted host. Restrict only
+# the socket families it needs.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# NOTE: MemoryDenyWriteExecute is intentionally NOT set — V8's JIT needs W+X.
+
+[Install]
+WantedBy=multi-user.target

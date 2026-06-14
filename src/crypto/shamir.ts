@@ -2,7 +2,7 @@
  * Shamir's Secret Sharing over GF(2^8) (Rijndael field, poly 0x11b).
  *
  * Implemented in-repo (no dependency) so it can be audited line by line, per the
- * project's "review every dependency" hardening rule.
+ * brief's "review every dependency" hardening rule.
  *
  * split(secret, k, n) -> n shares; any k reconstruct the secret, k-1 reveal nothing.
  * Share wire format: [x:1][y:len] where x is the 1-based evaluation point.

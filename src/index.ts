@@ -2,7 +2,7 @@
 /**
  * Credential Airlock CLI + daemon.
  *
- *   airlock init                 initialize the vault (sealed to this machine)
+ *   airlock init                 initialize the vault (sealed to your OS account; DPAPI on Windows)
  *   airlock start                run the airlock (proxy + local UI) and open it
  *   airlock run -- <cmd...>      run any command through the airlock
  *   airlock secret set <name> ... / list / rm / rotate
@@ -15,11 +15,14 @@
 import { spawn } from 'child_process';
 import * as net from 'net';
 import { paths as makePaths, isInitialized, loadConfig } from './config';
-import { Runtime } from './runtime';
+import { Runtime, runningPid, acquireWriteLock, releaseWriteLock } from './runtime';
 import { AdminServer } from './admin/server';
 import { migrateImport } from './migrate/ceremony';
 import { createSealer, autoSealerKind } from './crypto/sealer';
 import { dpapiSelfTest } from './crypto/dpapi';
+import { backup, restore } from './ops/backup';
+import { winCommandLine } from './util/wincmd';
+import { sanitizedEnv } from './util/env';
 import { InjectionSpec, InjectionMode } from './types';
 import { log } from './util/logger';
 
@@ -103,9 +106,12 @@ USAGE
   airlock start                         start proxy + local UI (opens browser)
   airlock run -- <command...>           run a command routed through the airlock
   airlock status
+  airlock health [--deep]               health probe (exit!=0 if unhealthy)
   airlock doctor                        environment self-test
   airlock ca                            show CA cert path + trust instructions
   airlock env                           print env vars to route a shell's traffic
+  airlock backup [--out <file>]         archive the sealed vault (disaster recovery)
+  airlock restore <file> [--force]      restore a sealed-vault backup (same machine)
 
   airlock secret set <name> (--value <v> | --stdin) --host <h> [--host <h2> ...]
         [--mode header|placeholder|query] [--header <H>] [--template "Bearer {{secret}}"]
@@ -183,7 +189,14 @@ async function cmdRun(rest: string[]): Promise<void> {
   process.on('unhandledRejection', (e) => log.error('unhandled rejection (kept alive)', { err: String(e) }));
   const [cmd, ...cmdArgs] = rest;
   log.info(`running through airlock: ${cmd} ${cmdArgs.join(' ')}`);
-  const child = spawn(cmd, cmdArgs, { stdio: 'inherit', env: { ...process.env, ...rt.wiredEnv() }, shell: process.platform === 'win32' });
+  // Sanitized base so the child never inherits the vault-sealing passphrase, etc.
+  const childEnv = { ...sanitizedEnv(), ...rt.wiredEnv() };
+  // On Windows, route .cmd/.bat shims through a shell using a correctly-quoted
+  // single command line (avoids Node's deprecated shell-with-args path, DEP0190).
+  const child =
+    process.platform === 'win32'
+      ? spawn(winCommandLine(cmd, cmdArgs), { stdio: 'inherit', env: childEnv, shell: true })
+      : spawn(cmd, cmdArgs, { stdio: 'inherit', env: childEnv });
   child.on('error', (e) => die(`failed to launch: ${e.message}`));
   child.on('exit', async (code) => {
     await rt.stopProxy();
@@ -318,10 +331,16 @@ async function cmdMigrate(parsed: Parsed): Promise<void> {
   if (sub === 'setup') {
     const pass = asStr(parsed.flags.passphrase);
     if (!pass) die('usage: airlock migrate setup --passphrase <p>  (min 12 chars)');
-    const rt = await Runtime.open(P);
+    // Preserve the explicit "must already be initialized" semantics — openOrInit
+    // would otherwise silently create a fresh vault on a mistyped AIRLOCK_HOME.
+    if (!isInitialized(P)) die('not initialized — run `airlock init` first');
+    // setupMigration APPENDS to the audit, so it must open as a repair-capable
+    // writer holding the single-writer lock — openOrInit does both (mirrors
+    // `secret set`). The read-only Runtime.open (repair=false) must never be used
+    // by an audit writer, or an append past a torn tail would stick verify().
+    const rt = await Runtime.openOrInit(P);
     let out!: { offlineShare: string };
     try {
-      rt.acquireLock();
       out = await rt.setupMigration(pass);
     } finally {
       rt.close();
@@ -346,11 +365,25 @@ async function cmdMigrate(parsed: Parsed): Promise<void> {
     return;
   }
   if (sub === 'import') {
-    const res = await migrateImport(P, {
-      passphrase: asStr(parsed.flags.passphrase),
-      offlineShare: asStr(parsed.flags['offline-share']),
-      delaySec: Number(asStr(parsed.flags.delay)) || 0,
-    });
+    // A mutation (rewrites vdk.seal/config and appends to the audit) — hold the
+    // single-writer lock like `restore`, so it can't race a live daemon or a
+    // concurrent import (the audit-writer-must-hold-the-lock invariant).
+    let fd: number;
+    try {
+      fd = acquireWriteLock(P);
+    } catch (e) {
+      die(e instanceof Error ? e.message : String(e));
+    }
+    let res: Awaited<ReturnType<typeof migrateImport>>;
+    try {
+      res = await migrateImport(P, {
+        passphrase: asStr(parsed.flags.passphrase),
+        offlineShare: asStr(parsed.flags['offline-share']),
+        delaySec: Number(asStr(parsed.flags.delay)) || 0,
+      });
+    } finally {
+      releaseWriteLock(P, fd);
+    }
     if (!res.ok) die(res.reason || 'migration failed');
     process.stdout.write(
       `vault migrated to this machine (shares: ${res.sharesUsed.join(', ')}).\n` +
@@ -403,6 +436,111 @@ async function cmdEnv(): Promise<void> {
   }
 }
 
+async function cmdBackup(parsed: Parsed): Promise<void> {
+  if (!isInitialized(P)) die('nothing to back up — run `airlock init` first');
+  const out = asStr(parsed.flags.out) || 'airlock-backup.akb';
+  const res = backup(P, out);
+  // The portability of a backup depends on the sealer: DPAPI/Keychain bind the
+  // sealed key to this machine/account; the passphrase sealer is portable.
+  let cfg = null;
+  try {
+    cfg = loadConfig(P);
+  } catch {
+    /* note is advisory only */
+  }
+  const note =
+    cfg?.sealer === 'passphrase'
+      ? 'note: this vault uses the passphrase sealer, so the backup is portable — it restores on any\nmachine WITH THE PASSPHRASE. Keep the backup and the passphrase apart.\n'
+      : 'note: the sealed key is machine-bound (DPAPI/Keychain) — restore on the SAME machine,\nor use `airlock migrate` to move the vault to a new machine.\n';
+  process.stdout.write(`backed up ${res.files} sealed files (${res.bytes} bytes) to ${out}\n` + note);
+}
+
+async function cmdRestore(parsed: Parsed): Promise<void> {
+  const inPath = parsed._[1] || asStr(parsed.flags.in);
+  if (!inPath) die('usage: airlock restore <backup-file> [--force]');
+  // Hold the single-writer lock across the restore: atomically refuses if a daemon
+  // is live AND blocks one from starting mid-restore (closes the runningPid TOCTOU).
+  let fd: number;
+  try {
+    fd = acquireWriteLock(P);
+  } catch (e) {
+    die(e instanceof Error ? e.message : String(e));
+  }
+  try {
+    const res = restore(P, inPath, { force: !!parsed.flags.force });
+    process.stdout.write(`restored ${res.restored} files into ${P.root}\n`);
+    // Best-effort integrity sweep: a vault from an OLDER build may hold a secret
+    // that predates set-time validation (restore writes the sealed blob directly,
+    // bypassing Vault.setSecret). The proxy fails closed on these at forward time;
+    // warn now so the operator can rotate them. Needs the sealer to open — for a
+    // passphrase vault without the passphrase here, we simply skip the sweep.
+    try {
+      const rt = await Runtime.open(P);
+      try {
+        for (const bad of rt.validateInjectors()) {
+          process.stderr.write(`warning: restored secret '${bad.name}' may not inject cleanly: ${bad.reason}\n`);
+        }
+      } finally {
+        rt.close();
+      }
+    } catch {
+      /* sealer unavailable (e.g. passphrase not provided) — skip the optional sweep */
+    }
+  } finally {
+    releaseWriteLock(P, fd);
+  }
+}
+
+async function cmdHealth(parsed: Parsed): Promise<void> {
+  const out: Record<string, unknown> = {};
+  const problems: string[] = [];
+  out.initialized = isInitialized(P);
+  if (!out.initialized) {
+    out.healthy = false;
+    out.problems = ['not initialized — run `airlock init`'];
+    process.stdout.write(JSON.stringify(out, null, 2) + '\n');
+    process.exit(1);
+  }
+  let cfg = null;
+  try {
+    cfg = loadConfig(P);
+  } catch (e) {
+    problems.push(`config.json corrupt: ${String(e)}`);
+  }
+  const proxyPort = Number(cfg?.proxyPort) || 7788;
+  const adminPort = Number(cfg?.adminPort) || 7800;
+  out.sealer = cfg?.sealer ?? null;
+  const pid = runningPid(P);
+  out.daemonPid = pid;
+  out.daemonRunning = pid !== null;
+  out.proxyListening = !(await portFree('127.0.0.1', proxyPort));
+  out.adminListening = !(await portFree('127.0.0.1', adminPort));
+  if (!out.proxyListening) problems.push(`proxy not listening on 127.0.0.1:${proxyPort}`);
+  // --deep additionally opens the vault and verifies the audit chain (slower:
+  // the passphrase sealer runs scrypt). Not for a frequent liveness probe.
+  if (parsed.flags.deep) {
+    try {
+      const rt = await Runtime.open(P);
+      try {
+        out.secrets = rt.vault.listSecrets().length;
+        const v = rt.audit.verify();
+        out.audit = v;
+        // A set tamper marker forces verify().ok === false, so this single check
+        // covers tamper, in-place edits, gaps, and tail truncation.
+        if (!v.ok) problems.push('audit chain does not verify (tamper / corruption / truncation)');
+      } finally {
+        rt.close();
+      }
+    } catch (e) {
+      problems.push(`deep check failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  out.healthy = problems.length === 0;
+  out.problems = problems;
+  process.stdout.write(JSON.stringify(out, null, 2) + '\n');
+  process.exit(out.healthy ? 0 : 1);
+}
+
 async function main(): Promise<void> {
   const parsed = parseArgs(process.argv.slice(2));
   const cmd = parsed._[0];
@@ -418,9 +556,27 @@ async function main(): Promise<void> {
         process.stdout.write(`already initialized at ${P.root}\n`);
         return;
       }
-      const rt = await Runtime.initNew(P, { passphrase: asStr(parsed.flags.passphrase) });
-      process.stdout.write(`initialized at ${P.root}\nsealer: ${rt.sealer.info.description}\nnext: airlock secret set ... then airlock start\n`);
-      rt.close();
+      // Hold the single-writer lock across init (creating the vault is a mutation),
+      // so two concurrent `init`s can't race — the lock is the invariant, with
+      // Vault.create's no-overwrite as defense-in-depth.
+      let fd: number;
+      try {
+        fd = acquireWriteLock(P);
+      } catch (e) {
+        die(e instanceof Error ? e.message : String(e));
+      }
+      try {
+        if (isInitialized(P)) {
+          // A concurrent process won the race between our first check and the lock.
+          process.stdout.write(`already initialized at ${P.root}\n`);
+          return;
+        }
+        const rt = await Runtime.initNew(P, { passphrase: asStr(parsed.flags.passphrase) });
+        process.stdout.write(`initialized at ${P.root}\nsealer: ${rt.sealer.info.description}\nnext: airlock secret set ... then airlock start\n`);
+        rt.close();
+      } finally {
+        releaseWriteLock(P, fd);
+      }
       return;
     }
     case 'start':
@@ -476,6 +632,12 @@ async function main(): Promise<void> {
       return cmdDoctor();
     case 'env':
       return cmdEnv();
+    case 'backup':
+      return cmdBackup(parsed);
+    case 'restore':
+      return cmdRestore(parsed);
+    case 'health':
+      return cmdHealth(parsed);
     default:
       die(`unknown command '${cmd}'. run 'airlock help'.`);
   }

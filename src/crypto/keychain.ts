@@ -7,8 +7,8 @@
  * ThisDeviceOnly semantics so they do not sync to iCloud.
  *
  * True Secure Enclave binding for arbitrary blobs needs a native helper; that is
- * the documented upgrade. This implementation is the OS-native Keychain
- * primitive and is only exercised on darwin.
+ * the documented upgrade. This implementation is the Keychain primitive named in
+ * the brief and is only exercised on darwin.
  */
 import { spawnSync } from 'child_process';
 import * as crypto from 'crypto';

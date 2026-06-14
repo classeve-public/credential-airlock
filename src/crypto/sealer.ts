@@ -2,6 +2,7 @@
  * Sealer factory. Chooses a hardware/OS-bound sealer by platform and NEVER
  * silently downgrades to weaker crypto — an unavailable sealer is a hard error.
  */
+import * as fs from 'fs';
 import { Sealer, SealerKind } from '../types';
 import { DpapiSealer, dpapiSelfTest } from './dpapi';
 import { KeychainSealer } from './keychain';
@@ -31,10 +32,19 @@ export function createSealer(kind: SealerKind, opts?: { passphrase?: string }): 
       if (process.platform !== 'darwin') throw new Error('Keychain sealer is only available on macOS');
       return new KeychainSealer();
     case 'passphrase': {
-      const pass = opts?.passphrase || process.env.AIRLOCK_PASSPHRASE;
+      let pass = opts?.passphrase || process.env.AIRLOCK_PASSPHRASE;
+      // Prefer a file-based secret (systemd LoadCredential / Docker secret) over an
+      // env var so the passphrase never appears in a process environment dump.
+      if (!pass && process.env.AIRLOCK_PASSPHRASE_FILE) {
+        try {
+          pass = fs.readFileSync(process.env.AIRLOCK_PASSPHRASE_FILE, 'utf8').replace(/\r?\n$/, '');
+        } catch (e) {
+          throw new Error(`AIRLOCK_PASSPHRASE_FILE could not be read: ${String(e)}`);
+        }
+      }
       if (!pass) {
         throw new Error(
-          'passphrase sealer requires a passphrase (set AIRLOCK_PASSPHRASE or pass --passphrase)'
+          'passphrase sealer requires a passphrase (set AIRLOCK_PASSPHRASE, AIRLOCK_PASSPHRASE_FILE, or pass --passphrase)'
         );
       }
       return new PassphraseSealer(pass);

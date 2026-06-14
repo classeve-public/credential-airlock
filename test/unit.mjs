@@ -58,8 +58,11 @@ section('shamir secret sharing (GF256) — property fuzz');
     const pick = idx.slice(0, k).map((i) => shares[i]);
     const recon = combine(pick);
     if (recon.equals(secret)) roundTrips++;
-    // k-1 shares must NOT reconstruct the secret
-    if (k - 1 >= 2) {
+    // k-1 shares must NOT reconstruct the secret. Only assert on secrets long
+    // enough that a coincidental (k-1)-point match is cryptographically impossible
+    // (256^-16); for a 1-byte secret a chance ~1/256 collision is expected and
+    // would make this a flaky assertion, not a real reconstruction.
+    if (k - 1 >= 2 && secret.length >= 16) {
       kMinus1Trials++;
       const less = idx.slice(0, k - 1).map((i) => shares[i]);
       const wrong = combine(less);
@@ -251,6 +254,197 @@ section('audit chain: tamper-evidence');
   fs.writeFileSync(P.audit, lines.join('\n') + '\n');
   ok('audit: in-place tamper detected', new AuditLog(P).verify().ok === false);
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+}
+
+// ---------------------------------------------------------------------------
+section('audit: read-only open (repair=false) never mutates the log');
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'airlock-unit-ro-'));
+  process.env.AIRLOCK_HOME = tmp;
+  delete require.cache[require.resolve(path.join(here, '..', 'dist', 'config.js'))];
+  const { paths } = D('config.js');
+  const { AuditLog } = D('audit/audit.js');
+  const P = paths();
+  fs.mkdirSync(P.root, { recursive: true });
+  const w = new AuditLog(P, true); // repair-capable writer (the daemon)
+  for (let i = 0; i < 3; i++) w.append({ event: 'system', reason: 'e' + i });
+  fs.appendFileSync(P.audit, '{"seq":99,"torn'); // simulate a crash-torn trailing fragment
+  const sizeBefore = fs.statSync(P.audit).size;
+  const ro = new AuditLog(P, false); // read-only open MUST NOT truncate or write tip/tamper
+  ok('audit(repair=false): leaves the torn file byte-for-byte unchanged', fs.statSync(P.audit).size === sizeBefore);
+  ok('audit(repair=false): verify reports the torn line (not ok)', ro.verify().ok === false);
+  ok('audit(repair=false): did NOT write a sticky tamper marker', !fs.existsSync(P.auditTamper));
+  const rw = new AuditLog(P, true); // a repair open (daemon restart) DROPS the torn tail
+  ok('audit(repair=true): truncates the torn tail on open', fs.statSync(P.audit).size < sizeBefore);
+  ok('audit(repair=true): verify ok after repair', rw.verify().ok === true);
+  try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+}
+
+// ---------------------------------------------------------------------------
+section('windows command-line quoting (DEP0190-safe spawn)');
+{
+  const { quoteWinArg, winCommandLine } = D('util/wincmd.js');
+  ok('quote: simple token left unquoted', quoteWinArg('simple') === 'simple');
+  ok('quote: empty string -> ""', quoteWinArg('') === '""');
+  ok('quote: token with spaces is wrapped', quoteWinArg('a b') === '"a b"');
+  ok('quote: embedded double-quote is escaped', quoteWinArg('a"b') === '"a\\"b"');
+  ok('quote: trailing backslashes doubled before closing quote', quoteWinArg('a b\\') === '"a b\\\\"');
+  ok('quote: backslashes before a quote doubled (+1)', quoteWinArg('a\\"b') === '"a\\\\\\"b"');
+  ok(
+    'cmdline: command + args joined with correct quoting',
+    winCommandLine('C:\\my app\\node.exe', ['-e', 'x y']) === '"C:\\my app\\node.exe" -e "x y"'
+  );
+  // cmd.exe metacharacters in a bare token must be quoted so cmd treats them as
+  // literal (else `?a=1&b=2` would split into a second command).
+  ok('quote: url with & is quoted (cmd metachar neutralized)', quoteWinArg('https://h/p?a=1&b=2') === '"https://h/p?a=1&b=2"');
+  ok('quote: pipe metachar forces quoting', quoteWinArg('a|b') === '"a|b"');
+}
+
+// ---------------------------------------------------------------------------
+section('deep-audit regressions: byte-aware scrub / SSRF / host canon / policy');
+{
+  // #1 non-ASCII secret must be redacted in its on-the-wire latin1 form (headers).
+  const { registerRedaction, clearRedactions, scrub, scrubLatin1 } = D('util/logger.js');
+  clearRedactions();
+  const secret = 'RSEC_' + String.fromCharCode(0xe9) + 'x' + String.fromCharCode(0xff) + '_END';
+  registerRedaction(secret);
+  const wire = Buffer.from(secret, 'utf8').toString('latin1'); // what Node hands us for a header value
+  ok('scrubLatin1: redacts a non-ASCII secret in its latin1 wire form', !scrubLatin1('X-Echo: ' + wire).includes(wire) && scrubLatin1(wire).includes('***REDACTED***'));
+  ok('scrub: also catches the wire form (registered as a redaction)', !scrub('hdr=' + wire).includes(wire));
+  clearRedactions();
+}
+{
+  // #7 isPrivateAddress must block IPv4-mapped IPv6 (incl. hex form) + standard ranges.
+  const { isPrivateAddress, canonicalHost } = D('proxy/proxy.js');
+  const priv = ['127.0.0.1', '10.1.2.3', '192.168.0.1', '172.16.0.1', '172.31.255.255', '169.254.169.254', '0.0.0.0', '::1', 'fc00::1', 'fd12::1', 'fe80::1', '::ffff:127.0.0.1', '::ffff:7f00:1', '::ffff:a9fe:a9fe', '::ffff:c0a8:1',
+    // fully-expanded IPv6 forms must also be classified (normalize-then-test, not string-shape)
+    '0:0:0:0:0:ffff:7f00:1', '0:0:0:0:0:ffff:a9fe:a9fe', '0:0:0:0:0:ffff:0a00:0001', '0:0:0:0:0:0:0:1', '0:0:0:0:0:ffff:127.0.0.1',
+    // RFC 4007 zone-id (%scope) forms — the OS still routes these to loopback/metadata
+    '::ffff:127.0.0.1%lo', '::ffff:169.254.169.254%eth0', '::ffff:10.0.0.1%1', 'fe80::1%eth0', '::1%lo'];
+  const pub = ['8.8.8.8', '1.1.1.1', '203.0.113.5', '172.32.0.1', '::ffff:8.8.8.8', '2606:4700:4700::1111',
+    // a legitimately-zoned PUBLIC address must NOT be over-blocked
+    '2606:4700:4700::1111%5'];
+  ok('isPrivateAddress: private/loopback/metadata (incl. hex IPv4-mapped) all blocked', priv.every((a) => isPrivateAddress(a)), priv.filter((a) => !isPrivateAddress(a)).join(','));
+  ok('isPrivateAddress: public addresses allowed', pub.every((a) => !isPrivateAddress(a)), pub.filter((a) => isPrivateAddress(a)).join(','));
+  // #6 host canonicalization (trailing dot + case) so policy/injection/egress agree.
+  ok('canonicalHost: lowercases + strips trailing dot on a DNS name', canonicalHost('API.Stripe.Com.') === 'api.stripe.com');
+  ok('canonicalHost: strips multiple trailing dots', canonicalHost('api.x.com..') === 'api.x.com');
+  ok('canonicalHost: leaves an IPv4 literal unchanged', canonicalHost('127.0.0.1') === '127.0.0.1');
+}
+{
+  // #9 unrecognized rule action must fail closed (deny), not fall through to allow.
+  const { PolicyEngine } = D('policy/policy.js');
+  const e1 = new PolicyEngine({ defaultAction: 'deny', egressAllowlist: ['api.x.com'], rules: [{ id: 'bad', match: { hosts: ['api.x.com'] }, action: 'block' }] });
+  ok('policy: unrecognized rule action coerced to deny', e1.evaluate({ host: 'api.x.com', method: 'GET', path: '/', body: null }).action === 'deny');
+  // #3 amount cap must bind BOTH body and query: a within-cap body must not mask an over-cap query.
+  const e2 = new PolicyEngine({ defaultAction: 'deny', egressAllowlist: ['api.x.com'], rules: [{ id: 'charge', match: { hosts: ['api.x.com'], paths: ['/charge'] }, action: 'allow', amountLimit: { field: 'amount', max: 1000 } }] });
+  const overQuery = e2.evaluate({ host: 'api.x.com', method: 'POST', path: '/charge?amount=999999', body: Buffer.from('{"amount":1}'), contentType: 'application/json' });
+  ok('policy: over-cap QUERY amount denied even with within-cap body', overQuery.action === 'deny', JSON.stringify(overQuery));
+  const bothOk = e2.evaluate({ host: 'api.x.com', method: 'POST', path: '/charge?amount=500', body: Buffer.from('{"amount":1}'), contentType: 'application/json' });
+  ok('policy: both-location amounts within cap -> allow', bothOk.action === 'allow', JSON.stringify(bothOk));
+}
+
+// ---------------------------------------------------------------------------
+section('round-7 regressions: env sanitize, encoded/lowercased scrub');
+{
+  // #3 launched agents must NOT inherit the vault-sealing passphrase / sealer / home.
+  const { sanitizedEnv } = D('util/env.js');
+  const fake = {
+    PATH: '/x',
+    HTTPS_PROXY: 'http://127.0.0.1:7788',
+    AIRLOCK_PASSPHRASE: 'p',
+    AIRLOCK_PASSPHRASE_FILE: '/f',
+    AIRLOCK_SEALER: 'passphrase',
+    AIRLOCK_HOME: '/h',
+  };
+  const clean = sanitizedEnv(fake);
+  ok(
+    'env: sanitizedEnv strips AIRLOCK passphrase/sealer/home',
+    !('AIRLOCK_PASSPHRASE' in clean) && !('AIRLOCK_PASSPHRASE_FILE' in clean) && !('AIRLOCK_SEALER' in clean) && !('AIRLOCK_HOME' in clean)
+  );
+  ok('env: sanitizedEnv keeps non-sensitive vars (PATH, proxy)', clean.PATH === '/x' && clean.HTTPS_PROXY === 'http://127.0.0.1:7788');
+}
+{
+  const { registerRedaction, clearRedactions, scrubBuffer, scrub } = D('util/logger.js');
+  // #8 query-mode injection sends encodeURIComponent(value); a reflective upstream echoing that must be scrubbed.
+  clearRedactions();
+  const secret = 'sk live/AKIA+SECRET==';
+  registerRedaction(secret);
+  const enc = encodeURIComponent(secret); // sk%20live%2FAKIA%2BSECRET%3D%3D
+  ok('scrub: percent-encoded (query-mode) secret reflection is redacted', !scrubBuffer(Buffer.from('echo=' + enc)).toString().includes(enc));
+  clearRedactions();
+  // #2 a mixed-case secret reflected as a lowercased header NAME must be redacted.
+  registerRedaction('Sk-AbC123XyZ');
+  ok('scrub: lowercased secret form is redacted (header-name case-fold)', !scrub('x-h: sk-abc123xyz').includes('sk-abc123xyz'));
+  clearRedactions();
+}
+
+// ---------------------------------------------------------------------------
+section('round-8 regressions: injectable-secret validation char-class');
+{
+  const { assertInjectableSecret } = D('util/secret-validate.js');
+  const hdr = (header) => ({ mode: 'header', header, valueTemplate: 'Bearer {{secret}}' });
+
+  // header mode: CR/LF rejected (header injection), >0xFF rejected (Node throws),
+  // tab + high-Latin1 allowed (Node permits them in header values).
+  ok('validate: header mode rejects CR/LF value', throws(() => assertInjectableSecret('tok\r\nX: 1', hdr('authorization'))));
+  ok('validate: header mode rejects code unit >0xFF', throws(() => assertInjectableSecret('tokĀ', hdr('authorization'))));
+  ok('validate: header mode allows tab and high-Latin1', !throws(() => assertInjectableSecret('tok\tvalÿ', hdr('authorization'))));
+  ok('validate: header mode rejects an invalid header NAME', throws(() => assertInjectableSecret('tok', hdr('bad name'))));
+  ok('validate: a clean token is accepted', !throws(() => assertInjectableSecret('sk-live-ABC123==', hdr('authorization'))));
+
+  // placeholder mode: header-safe UNCONDITIONALLY (the placeholder can land in a
+  // header even with injectInBody), so CR/LF is rejected regardless.
+  ok(
+    'validate: placeholder+injectInBody still rejects CR/LF (would smuggle headers)',
+    throws(() => assertInjectableSecret('a\r\nb', { mode: 'placeholder', placeholder: '__K__', injectInBody: true }))
+  );
+
+  // query mode: the value is percent-encoded, so CR/LF is SAFE on the wire and
+  // allowed; only a lone surrogate (encodeURIComponent throws) and a control-char
+  // param name are rejected.
+  ok('validate: query mode ALLOWS CR/LF value (percent-encoded)', !throws(() => assertInjectableSecret('a\r\nb', { mode: 'query', queryParam: 'api_key' })));
+  ok('validate: query mode rejects a control-char param name', throws(() => assertInjectableSecret('tok', { mode: 'query', queryParam: 'a\nb' })));
+
+  // lone surrogate rejected in every mode (would crash encodeURIComponent at inject time).
+  ok('validate: lone surrogate value rejected (query)', throws(() => assertInjectableSecret('k\uD800ey', { mode: 'query', queryParam: 'q' })));
+  ok('validate: lone surrogate value rejected (header)', throws(() => assertInjectableSecret('k\uD800ey', hdr('authorization'))));
+  ok('validate: empty value rejected', throws(() => assertInjectableSecret('', hdr('authorization'))));
+}
+
+// ---------------------------------------------------------------------------
+section('round-8 regressions: isLocalLiteral is IP-literal-anchored (no DNS-name match)');
+{
+  const { isLocalLiteral } = D('proxy/proxy.js');
+  ok('isLocalLiteral: 127.0.0.1 is loopback', isLocalLiteral('127.0.0.1') === true);
+  ok('isLocalLiteral: localhost is loopback', isLocalLiteral('localhost') === true);
+  ok('isLocalLiteral: ::1 (bracketed) is loopback', isLocalLiteral('[::1]') === true);
+  // The bug: an unanchored /^127\./ matched DNS names, exempting them from the
+  // cleartext/SSRF/vetting guards. These must now be FALSE.
+  ok('isLocalLiteral: 127.evil.com is NOT loopback', isLocalLiteral('127.evil.com') === false);
+  ok('isLocalLiteral: 127.0.0.1.evil.com is NOT loopback', isLocalLiteral('127.0.0.1.evil.com') === false);
+  ok('isLocalLiteral: a public host is NOT loopback', isLocalLiteral('api.openai.com') === false);
+}
+
+// ---------------------------------------------------------------------------
+section('round-8 regressions: env sanitization strips the whole AIRLOCK_* namespace');
+{
+  const { sanitizedEnv } = D('util/env.js');
+  const clean = sanitizedEnv({
+    PATH: '/x',
+    HTTPS_PROXY: 'http://127.0.0.1:7788',
+    AIRLOCK_PASSPHRASE: 'p',
+    AIRLOCK_SEALER: 'passphrase',
+    AIRLOCK_HOME: '/h',
+    AIRLOCK_PROXY_PORT: '7788',
+    AIRLOCK_FUTURE_SECRET: 'leak', // a var nobody remembered to denylist
+    AIRLOCK_ACTIVE: '1',
+  });
+  ok(
+    'env: a future AIRLOCK_* var is stripped by the namespace sweep (no denylist drift)',
+    !('AIRLOCK_FUTURE_SECRET' in clean) && !('AIRLOCK_PROXY_PORT' in clean) && !('AIRLOCK_ACTIVE' in clean)
+  );
+  ok('env: non-AIRLOCK vars survive', clean.PATH === '/x' && clean.HTTPS_PROXY === 'http://127.0.0.1:7788');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -220,27 +220,39 @@ export class AdminServer {
         if (!b.name || !b.value || !Array.isArray(b.allowedHosts) || !b.allowedHosts.length || !b.injection) {
           return this.json(res, 400, { error: 'name, value, allowedHosts[], injection are required' });
         }
-        this.rt.addOrUpdateSecret({
-          name: b.name,
-          placeholder: b.placeholder || `__${b.name.toUpperCase()}__`,
-          allowedHosts: b.allowedHosts,
-          injection: b.injection,
-          description: b.description,
-          value: b.value,
-        });
+        try {
+          this.rt.addOrUpdateSecret({
+            name: b.name,
+            placeholder: b.placeholder || `__${b.name.toUpperCase()}__`,
+            allowedHosts: b.allowedHosts,
+            injection: b.injection,
+            description: b.description,
+            value: b.value,
+          });
+        } catch (e) {
+          // Validation failure (e.g. a value that can't form a valid header) — return
+          // the actionable 400 reason, not a generic 500. The validator's messages are
+          // fixed strings that never embed the secret value, so they are safe to echo.
+          log.warn('secret set rejected', { err: String(e) });
+          return this.json(res, 400, { error: e instanceof Error ? e.message : 'invalid secret' });
+        }
         this.rt.audit.append({ event: 'admin', reason: `secret '${b.name}' set`, detail: { hosts: b.allowedHosts } });
         return this.json(res, 200, { ok: true });
       }
       if (method === 'POST' && segs.length === 4 && segs[3] === 'rotate') {
         const b = await this.readJsonBody<{ value: string }>(req);
         if (!b.value) return this.json(res, 400, { error: 'value required' });
+        const rotName = decodeURIComponent(segs[2]);
+        // Distinguish "no such secret" (404) from "value rejected by validation" (400)
+        // so the operator gets an accurate, actionable error instead of a blanket 404.
+        if (!this.rt.vault.hasSecret(rotName)) return this.json(res, 404, { error: 'no such secret' });
         try {
-          this.rt.rotateSecret(decodeURIComponent(segs[2]), b.value);
+          this.rt.rotateSecret(rotName, b.value);
         } catch (e) {
-          log.warn('secret rotate failed', { err: String(e) });
-          return this.json(res, 404, { error: 'no such secret, or rotation failed' });
+          log.warn('secret rotate rejected', { err: String(e) });
+          return this.json(res, 400, { error: e instanceof Error ? e.message : 'rotation failed' });
         }
-        this.rt.audit.append({ event: 'admin', reason: `secret '${segs[2]}' rotated` });
+        this.rt.audit.append({ event: 'admin', reason: `secret '${rotName}' rotated` });
         return this.json(res, 200, { ok: true });
       }
       if (method === 'DELETE' && segs.length === 3) {

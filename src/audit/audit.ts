@@ -33,7 +33,18 @@ export class AuditLog {
   private lastHash = GENESIS;
   private listeners = new Set<(e: AuditEntry) => void>();
 
-  constructor(private readonly p: Paths) {
+  /**
+   * @param repair  When true (the default — used by the lock-holding daemon via
+   *   `Runtime.openOrInit`/`initNew`, and by tests), the constructor PHYSICALLY
+   *   truncates a crash-torn trailing line and (re)syncs the out-of-band tip.
+   *   Read-only callers (`Runtime.open`: status / audit --verify / health --deep
+   *   / secret list) pass `false`, so merely OPENING the log never mutates a file
+   *   that a concurrently running daemon owns. This upholds the append-only and
+   *   single-writer invariants: open-time repair is a write, and writes belong to
+   *   the lock holder. A non-repair open still reads seq/hash for in-memory
+   *   verify(); it just leaves a torn tail for the daemon to fix on its next start.
+   */
+  constructor(private readonly p: Paths, private readonly repair = true) {
     const buf = readFileOpt(p.audit);
     if (buf && buf.length) {
       // Walk lines tracking byte offsets so we can PHYSICALLY truncate a torn
@@ -57,7 +68,7 @@ export class AuditLog {
         }
         off += segBytes + (hasNL ? 1 : 0);
       }
-      if (validEnd < buf.length) {
+      if (this.repair && validEnd < buf.length) {
         try {
           fs.truncateSync(p.audit, validEnd); // drop crash-torn trailing bytes
         } catch {
@@ -65,7 +76,9 @@ export class AuditLog {
         }
       }
     }
-    this.syncTip();
+    // syncTip() may write the tip or a sticky tamper marker — both are mutations,
+    // so only the repair (lock-holding) path performs them.
+    if (this.repair) this.syncTip();
   }
 
   private static parseLine(l: string): AuditEntry | null {

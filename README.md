@@ -1,16 +1,21 @@
 # Credential Airlock
 
+[![CI](https://github.com/classeve-public/credential-airlock/actions/workflows/ci.yml/badge.svg)](https://github.com/classeve-public/credential-airlock/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Security policy](https://img.shields.io/badge/security-policy-informational.svg)](SECURITY.md)
+
 **A self-hosted, OS-sealed credential firewall for AI agents.**
 Your agents never hold your real API keys. The real keys are sealed to this
 machine. Every outbound request is policy-checked and audited before it leaves.
 
-Windows-first. Node/TypeScript. You run it; we never see your credentials.
+Built and maintained by **Classeve**. Windows-first. Node/TypeScript. You run
+it; Classeve never sees your credentials.
 
 > **Status: personal / single-operator use. Not yet third-party audited.**
-> See [Before you sell this to others](#before-you-sell-this-to-others) before you put it
+> See [Before you put this in front of other people's credentials](#before-you-put-this-in-front-of-other-peoples-credentials) before you put it
 > in front of anyone else's secrets, and read the [Threat Model](docs/THREAT-MODEL.md) before
-> you trust it with yours. Internal review evidence (4 review rounds, 63 issues
-> fixed, 126-assertion test suite, `npm audit` clean) is documented in
+> you trust it with yours. Internal review evidence (eight review rounds, 118 issues
+> fixed, 209-assertion test suite, `npm audit` clean) is documented in
 > [docs/AUDIT.md](docs/AUDIT.md).
 
 ---
@@ -56,8 +61,8 @@ This product wins on **execution and honesty**, not on novel cryptography.
   approval**, not by hiding the key. Read [THREAT-MODEL.md](docs/THREAT-MODEL.md).
 
 What you *can* honestly say is in [Claims we make / claims we do not
-make](#claims-we-make--claims-we-do-not-make). If a sentence isn't in the
-"CAN say" list, don't say it.
+make](#claims-we-make--claims-we-do-not-make), copied faithfully from the
+product brief. If a sentence isn't in the "CAN say" list, don't say it.
 
 ### The competitive reality
 
@@ -88,40 +93,54 @@ These exist as of 2026. Study them; don't pretend they don't.
 
 ## 60-second quickstart
 
-> Windows 11 + PowerShell. Requires **Node ≥ 20**. For a deeper walkthrough
-> (trusting the CA, routing a Python agent, an end-to-end OpenAI example) see
-> [docs/QUICKSTART.md](docs/QUICKSTART.md).
+> Windows 11 + PowerShell. Requires **Node >= 20**. For installation variants,
+> upgrades, and tarball/GitHub installs, see [docs/INSTALL.md](docs/INSTALL.md).
+> For a deeper walkthrough (trusting the CA, routing a Python agent, an
+> end-to-end OpenAI example) see [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
 ```powershell
-# 1. Install deps and build
-npm install
-npm run build
+# 1. Install the CLI
+npm install -g credential-airlock
 
-# 2. Initialize the vault (sealed to your Windows account on this machine via DPAPI)
-node dist/index.js init
+# 2. Check the machine, ports, and sealer
+airlock doctor
 
-# 3. Store a secret. It is ONLY ever injected toward the hosts you list here.
-node dist/index.js secret set openai --value "sk-REAL-KEY" --host api.openai.com
+# 3. Initialize the vault (sealed to your Windows account on this machine via DPAPI)
+airlock init
 
-# 4. Start the airlock (proxy + local control panel). This opens your browser.
-node dist/index.js start
+# 4. Store a secret. It is ONLY ever injected toward the hosts you list here.
+$secret = Read-Host "OpenAI key"
+$secret | airlock secret set openai --stdin --host api.openai.com
+Remove-Variable secret
+
+# 5. Start the airlock (proxy + local control panel). This opens your browser.
+airlock start
 #    Proxy (point agents here): http://127.0.0.1:7788
 #    Control panel:             http://127.0.0.1:7800/?token=<one-time-token>
 
-# 5a. In the control panel: add an agent (its command), then flip its toggle to launch it
-#     through the airlock — env is pre-wired so it only sees dummies.
+# 6a. In the control panel: add an agent (its command), then flip its toggle to launch it
+#     through the airlock - env is pre-wired so it only sees dummies.
 
-# 5b. ...or run any command through the airlock directly:
-node dist/index.js run -- python my_agent.py
+# 6b. ...or run any command through the airlock directly:
+airlock run -- python my_agent.py
 ```
 
 Your agent now uses the placeholder `__OPENAI__` (or whatever you configured)
 instead of the real key. Rotate the key with `secret rotate` and the agent
-never changes — it only ever knew the dummy.
+never changes - it only ever knew the dummy.
 
-> `npm start` / `npm run airlock` are shortcuts for `node dist/index.js`.
-> Throughout the docs, `airlock <cmd>` means `node dist/index.js <cmd>` (the
-> package also installs an `airlock` bin that maps to `dist/index.js`).
+For source development:
+
+```powershell
+git clone https://github.com/classeve-public/credential-airlock
+cd credential-airlock
+npm install
+npm run build
+node dist/index.js doctor
+```
+
+> `airlock <cmd>` is the installed CLI. In a source checkout, `npm start`,
+> `npm run airlock`, or `node dist/index.js <cmd>` run the same entrypoint.
 
 ---
 
@@ -205,8 +224,9 @@ exact hostnames where you can.
 
 ## Command reference
 
-`airlock <cmd>` = `node dist/index.js <cmd>`. Data dir is printed by
-`airlock help` and `airlock doctor`.
+`airlock <cmd>` is the installed CLI. In a source checkout, `node dist/index.js
+<cmd>` reaches the same entrypoint after the project is built. Data dir is
+printed by `airlock help` and `airlock doctor`.
 
 ### Lifecycle
 
@@ -241,7 +261,7 @@ airlock ca
 airlock env
         Print the proxy/CA environment variables for the current shell
         (PowerShell `$env:` syntax on Windows). Use to wire a shell by hand:
-        `node dist/index.js env | Out-String | Invoke-Expression`
+        `airlock env | Out-String | Invoke-Expression`
 ```
 
 ### Secrets
@@ -469,33 +489,37 @@ one, and rotate the upstream keys.
 
 ---
 
-## Before you sell this to others
+## Before you put this in front of other people's credentials
 
 This is currently fit for **personal / single-operator use and has not been
-through a third-party security audit.** A product that holds other people's
-keys is the highest-value target on the internet (see the LiteLLM and
-Bitwarden-CLI incidents of 2026). Treat the
+through a third-party security audit.** The product brief is blunt about why a
+product that holds other people's keys is the highest-value target on the
+internet (see the LiteLLM and Bitwarden-CLI incidents of 2026). Treat the
 following as **non-negotiable before you make any public security claim** or put
 this in front of someone else's credentials:
 
-- [ ] **Minimal, pinned dependencies; review every one.** Supply chain is how
+- [x] **Minimal, pinned dependencies; review every one.** Supply chain is how
       LiteLLM-class incidents happen. (This build has a single runtime dep,
       `node-forge`, pinned to `1.4.0`; `npm run audit` reports 0 vulnerabilities.)
-- [ ] **Signed, reproducible builds.** Ship artifacts a buyer can verify.
-- [ ] **Run the proxy as its own unprivileged user** (its own
-      user/namespace/container). It can unwrap real keys — it is the crown jewel.
-- [ ] **No network-exposed admin or "reveal" endpoint. Ever.** The control plane
+- [x] **Release artifacts a user can verify.** The release workflow produces a
+      packed npm artifact, CycloneDX SBOM, SHA-256 checksums, and GitHub
+      build-provenance attestation.
+- [x] **Run the proxy as its own unprivileged user** where possible (its own
+      user/namespace/container). It can unwrap real keys - it is the crown jewel.
+- [x] **No network-exposed admin or "reveal" endpoint. Ever.** The control plane
       stays loopback-only; there is deliberately no reveal route.
 - [ ] **Third-party pentest before any public security claim.**
 
-Until those are done, market it as exactly what it is: a self-hosted credential
-firewall for your own agents, with honest limits.
+Until the external pentest is done, market it as exactly what it is: a Classeve
+open-source, self-hosted credential firewall for your own agents and trusted
+teams, with honest limits.
 
 ---
 
 ## Claims we make / claims we do not make
 
-Underpromise the guarantee, overdeliver the execution.
+Copied faithfully from the product brief (section 7). Underpromise the
+guarantee, overdeliver the execution.
 
 **CAN say (truthful, defensible):**
 
@@ -518,18 +542,24 @@ Underpromise the guarantee, overdeliver the execution.
 
 ## Documentation
 
-- [docs/QUICKSTART.md](docs/QUICKSTART.md) — Windows 11 + PowerShell walkthrough,
+- [docs/INSTALL.md](docs/INSTALL.md) - npm, GitHub, one-shot, tarball, upgrade,
+  reinstall, and post-install verification.
+- [docs/QUICKSTART.md](docs/QUICKSTART.md) - Windows 11 + PowerShell walkthrough,
   trusting the CA, routing a real agent, an end-to-end OpenAI example.
-- [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) — what it protects against, what it
+- [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) - what it protects against, what it
   does **not**, concrete mitigations, and known limitations.
-- [docs/ADAPTERS.md](docs/ADAPTERS.md) — copy-paste `secret set` recipes for
+- [docs/ADAPTERS.md](docs/ADAPTERS.md) - copy-paste `secret set` recipes for
   OpenAI, Anthropic, Stripe, GitHub, Cloudflare, SendGrid, Slack, Gemini,
   Notion, and Twilio.
-
-## About
-
-Built and maintained by [ClassEve](https://classeve.com) — engineering for AI agents and developer tooling. Project page: [classeve.com/public/airlock](https://classeve.com/public/airlock).
+- [docs/DEPLOY.md](docs/DEPLOY.md) - Windows, macOS, Linux systemd, Docker,
+  sidecar networking, monitoring, backup, restore, and upgrade guidance.
+- [docs/LAUNCH.md](docs/LAUNCH.md) - the public launch-readiness contract.
+- [docs/RELEASE.md](docs/RELEASE.md) - maintainer release checklist for npm and
+  GitHub Releases.
+- [SECURITY.md](SECURITY.md) - vulnerability reporting and safe harbor.
+- [SUPPORT.md](SUPPORT.md) - how to ask for help without leaking secrets.
 
 ## License
 
-Apache-2.0. Copyright 2026 ClassEve. See [LICENSE](LICENSE).
+Apache-2.0. Copyright 2026 Classeve. Created by Ranjit Barnala. See
+[LICENSE](LICENSE) and [NOTICE](NOTICE.md).

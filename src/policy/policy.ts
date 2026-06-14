@@ -6,7 +6,7 @@
  * Rules may carry a rate limit (sliding window) and an amount cap (a hard ceiling
  * on a named numeric body field, e.g. Stripe `amount`).
  */
-import { Policy, PolicyDecision, PolicyRule, RateLimit } from '../types';
+import { Policy, PolicyAction, PolicyDecision, PolicyRule, RateLimit } from '../types';
 import { matchAnyHost, matchAnyPath } from '../util/glob';
 
 export interface EvalCtx {
@@ -127,23 +127,27 @@ export class PolicyEngine {
 
       if (rule.amountLimit) {
         const field = rule.amountLimit.field;
-        // Read the amount from the body OR the query string (an attacker could put it
-        // in either; the upstream may read either).
-        let amt = extractAmount(ctx.body, ctx.contentType, field);
-        if (amt === undefined) amt = extractAmountFromQuery(ctx.path, field);
-        if (amt !== undefined) {
-          if (amt < 0 || amt > rule.amountLimit.max) {
+        const max = rule.amountLimit.max;
+        // Enforce the cap against EVERY location the upstream might read the amount
+        // from — the body AND the query string. A within-cap body value must NOT
+        // short-circuit (and thus mask) an over-cap query value, or vice versa.
+        const amtBody = extractAmount(ctx.body, ctx.contentType, field);
+        const amtQuery = extractAmountFromQuery(ctx.path, field);
+        for (const amt of [amtBody, amtQuery]) {
+          if (amt !== undefined && (amt < 0 || amt > max)) {
             return {
               action: 'deny',
               ruleId: rule.id,
-              reason: `amount ${amt} is outside the allowed range [0, ${rule.amountLimit.max}] on field '${field}'`,
+              reason: `amount ${amt} is outside the allowed range [0, ${max}] on field '${field}'`,
             };
           }
-        } else {
-          // No readable amount. Fail closed for any request that could carry one —
-          // a non-empty body (incl. unparseable encodings, top-level arrays/primitives,
-          // non-numeric values) or a mutating method — so the hard ceiling can't be
-          // bypassed by hiding/omitting the amount. (Bodyless GET/HEAD: nothing to cap.)
+        }
+        if (amtBody === undefined && amtQuery === undefined) {
+          // No readable amount in either location. Fail closed for any request that
+          // could carry one — a non-empty body (incl. unparseable encodings, top-level
+          // arrays/primitives, non-numeric values) or a mutating method — so the hard
+          // ceiling can't be bypassed by hiding/omitting the amount. (Bodyless GET/HEAD:
+          // nothing to cap.)
           const mutating = ['POST', 'PUT', 'PATCH'].includes(ctx.method.toUpperCase());
           if ((ctx.body && ctx.body.length) || mutating) {
             return {
@@ -155,7 +159,12 @@ export class PolicyEngine {
         }
       }
 
-      if (rule.action === 'allow' && rule.rateLimit) {
+      // Deny-by-default for an unrecognized rule action (typo/hand-edit/bad producer):
+      // a malformed action must never fall through to allow + credential injection.
+      const safeAction: PolicyAction =
+        rule.action === 'allow' || rule.action === 'require_approval' ? rule.action : 'deny';
+
+      if (safeAction === 'allow' && rule.rateLimit) {
         const ok = this.consumeRate(rule.id, rule.rateLimit.max, rule.rateLimit.windowSec);
         if (!ok) {
           return {
@@ -166,7 +175,11 @@ export class PolicyEngine {
         }
       }
 
-      return { action: rule.action, ruleId: rule.id, reason: `matched rule '${rule.id}'` };
+      return {
+        action: safeAction,
+        ruleId: rule.id,
+        reason: safeAction === rule.action ? `matched rule '${rule.id}'` : `matched rule '${rule.id}' (unrecognized action -> deny)`,
+      };
     }
     return { action: this.policy.defaultAction, reason: 'no matching rule (deny-by-default)' };
   }

@@ -13,6 +13,7 @@ import { createRequire } from 'module';
 import http from 'http';
 import https from 'https';
 import tls from 'tls';
+import net from 'net';
 import zlib from 'zlib';
 import fs from 'fs';
 import os from 'os';
@@ -111,6 +112,23 @@ function viaProxy({ host, port, method = 'GET', pathName = '/', headers = {}, bo
   });
 }
 
+// Plain-HTTP forward-proxy request (absolute-form URL as the request target).
+function viaPlainProxy(absoluteUrl) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(absoluteUrl);
+    const r = http.request(
+      { host: '127.0.0.1', port: PROXY_PORT, method: 'GET', path: absoluteUrl, headers: { Host: u.host } },
+      (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+      }
+    );
+    r.on('error', reject);
+    r.end();
+  });
+}
+
 async function main() {
   const tmp = process.env.E2E_TMP;
   const { Runtime } = dist('runtime.js');
@@ -157,6 +175,34 @@ async function main() {
         res.end(payload);
         return;
       }
+      if (req.url.startsWith('/resetmid')) {
+        // Hostile/flaky upstream: send headers + a PARTIAL body, then ABRUPTLY reset
+        // the TCP connection mid-body (no 'end'). The proxy must finalize the agent
+        // response (no hang) and still write one audit line for the egress.
+        res.writeHead(200, { 'content-type': 'application/json', 'content-length': '100000' });
+        res.write('{"partial":true,');
+        setTimeout(() => {
+          try {
+            res.socket?.destroy();
+          } catch {
+            /* ignore */
+          }
+        }, 20);
+        return;
+      }
+      if (req.url.startsWith('/reflectname')) {
+        // Hostile: echo the RECEIVED credential back as a response HEADER NAME.
+        const secretName = String(req.headers.authorization || 'x').replace(/^Bearer /, '');
+        const h = { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) };
+        try {
+          h[secretName] = '1';
+        } catch {
+          /* invalid name */
+        }
+        res.writeHead(200, h);
+        res.end(payload);
+        return;
+      }
       res.writeHead(200, {
         'content-type': 'application/json',
         'content-length': Buffer.byteLength(payload),
@@ -182,14 +228,23 @@ async function main() {
     injection: { mode: 'placeholder', placeholder: '__APIKEY__', injectInBody: true },
     value: PH_SECRET,
   });
+  // A secret bound to a NON-local host, to prove cleartext injection is refused.
+  rt.addOrUpdateSecret({
+    name: 'cleartextsvc',
+    placeholder: '__CT__',
+    allowedHosts: ['api.cleartext.test'],
+    injection: { mode: 'header', header: 'authorization', valueTemplate: 'Bearer {{secret}}' },
+    value: 'REALSECRET_cleartext_5555',
+  });
   // Explicit policy: approval + amount rules BEFORE the broad allow (first match wins).
   rt.savePolicy({
     defaultAction: 'deny',
-    egressAllowlist: ['localhost'],
+    egressAllowlist: ['localhost', 'api.cleartext.test'],
     rules: [
       { id: 'approval', match: { hosts: ['localhost'], paths: ['/needapproval'] }, action: 'require_approval' },
       { id: 'amount', match: { hosts: ['localhost'], paths: ['/charge'] }, action: 'allow', amountLimit: { field: 'amount', max: 1000 } },
       { id: 'allow-local', match: { hosts: ['localhost'] }, action: 'allow' },
+      { id: 'allow-ct', match: { hosts: ['api.cleartext.test'] }, action: 'allow' },
     ],
   });
   await rt.startProxy();
@@ -201,6 +256,36 @@ async function main() {
     ok('header injection: upstream received real Bearer token', received && received.headers.authorization === `Bearer ${HEADER_SECRET}`, received && received.headers.authorization);
     ok('response scrub: secret redacted in reflected body', !r.body.includes(HEADER_SECRET) && r.body.includes('REDACTED'), r.body.slice(0, 100));
     ok('response scrub: secret redacted in reflected header', !(r.headers['x-echo-auth'] || '').includes(HEADER_SECRET), r.headers['x-echo-auth']);
+  }
+
+  // 1c. a reflective upstream echoing the secret as a response HEADER NAME must be dropped/scrubbed
+  {
+    const r = await viaProxy({ host: 'localhost', port: UP_PORT, pathName: '/reflectname', airlockCa });
+    const keys = Object.keys(r.headers).join('|').toLowerCase();
+    ok('response scrub: secret reflected as a HEADER NAME is dropped', !keys.includes(HEADER_SECRET.toLowerCase()), keys);
+  }
+
+  // 1d. cleartext credential injection to a NON-local host is refused (key never leaves over plain HTTP)
+  {
+    const r = await viaPlainProxy('http://api.cleartext.test/x');
+    ok('cleartext guard: plain-HTTP injection to a non-local host is refused (403)', r.status === 403 && /cleartext/i.test(r.body), `${r.status} ${r.body.slice(0, 80)}`);
+  }
+
+  // 1e. set-time validation: a control-char secret value is rejected at write time (not sealed then black-holed)
+  {
+    let threw = false;
+    try {
+      rt.addOrUpdateSecret({
+        name: 'bad',
+        placeholder: '__BAD__',
+        allowedHosts: ['localhost'],
+        injection: { mode: 'header', header: 'authorization', valueTemplate: 'Bearer {{secret}}' },
+        value: 'tok\r\nInjected: 1',
+      });
+    } catch {
+      threw = true;
+    }
+    ok('set-time validation: a CR/LF secret value is rejected at write time', threw && !rt.vault.hasSecret('bad'));
   }
 
   // 1b. gzip reflective response: decompressed, scrubbed, re-emitted identity (not corrupted)
@@ -240,6 +325,52 @@ async function main() {
   {
     const r = await viaProxy({ host: 'localhost', port: UP_PORT, method: 'HEAD', pathName: '/echo', airlockCa });
     ok('HEAD: status 200 and content-length preserved (not zeroed)', r.status === 200 && Number(r.headers['content-length']) > 0, `cl=${r.headers['content-length']}`);
+  }
+
+  // 1g. LIFECYCLE: an upstream RST mid-body must finalize the agent response (no
+  // permanent hang) AND still emit an audit line. (Regression: the old teardown
+  // handlers released the byte counter but never ended res or called done.)
+  {
+    let r;
+    try {
+      r = await Promise.race([
+        viaProxy({ host: 'localhost', port: UP_PORT, pathName: '/resetmid', airlockCa }),
+        new Promise((res) => setTimeout(() => res({ status: 'HANG_TIMEOUT' }), 8000)),
+      ]);
+    } catch (e) {
+      r = { status: 'ERR', err: String(e) };
+    }
+    ok('lifecycle: upstream RST mid-body does NOT hang the agent', r.status !== 'HANG_TIMEOUT', JSON.stringify(r));
+    ok('lifecycle: upstream RST mid-body fails closed (502)', r.status === 502, JSON.stringify(r));
+  }
+
+  // 1h. LIFECYCLE/AUDIT: an allowlisted host whose connection is REFUSED must 502
+  // (no hang) and the audit must NOT over-claim the credential as delivered.
+  {
+    const closedPort = await new Promise((resolve) => {
+      const s = net.createServer();
+      s.listen(0, '127.0.0.1', () => {
+        const p = s.address().port;
+        s.close(() => resolve(p));
+      });
+    });
+    let r;
+    try {
+      r = await Promise.race([
+        viaProxy({ host: 'localhost', port: closedPort, pathName: '/echo', airlockCa }),
+        new Promise((res) => setTimeout(() => res({ status: 'HANG_TIMEOUT' }), 8000)),
+      ]);
+    } catch (e) {
+      r = { status: 'ERR', err: String(e) };
+    }
+    ok('lifecycle: connection-refused upstream fails closed without hang', r.status === 502 || r.status === 'ERR', JSON.stringify(r));
+  }
+
+  // 1i. DENY-BY-DEFAULT on the PLAIN-HTTP plane: a non-allowlisted host is refused
+  // (403) — symmetric with CONNECT, and BEFORE any DNS lookup (no blind-DNS exfil).
+  {
+    const r = await viaPlainProxy('http://definitely-not-allowlisted.invalid/x');
+    ok('deny-by-default (plain plane): non-allowlisted host refused (403)', r.status === 403, `${r.status} ${r.body.slice(0, 80)}`);
   }
 
   // 2. placeholder injection in header AND body (verified at the upstream)
@@ -355,6 +486,9 @@ async function main() {
     ok('audit log does not contain any secret value', !auditTxt.includes(HEADER_SECRET) && !auditTxt.includes(PH_SECRET));
     const auditHasName = auditTxt.includes('"svc"') || auditTxt.includes('svc');
     ok('audit log records secret NAME (svc), not value', auditHasName);
+    // The connection-refused request (1h) must be audited as a NON-delivered egress —
+    // the credential never left, so the tamper-evident log must not over-claim it.
+    ok('audit fidelity: a pre-egress failure is recorded delivered:false', auditTxt.includes('"delivered":false'), 'no delivered:false entry found');
   }
 
   await rt.stopProxy();

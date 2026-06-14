@@ -1,0 +1,14 @@
+.git
+.github
+node_modules
+dist
+test
+docs
+deploy
+*.md
+.claude
+*.tgz
+sbom.cdx.json
+SHA256SUMS.txt
+airlock_passphrase.txt
+npm-debug.log*

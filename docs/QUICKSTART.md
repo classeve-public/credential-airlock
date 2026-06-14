@@ -1,30 +1,28 @@
-# Quickstart — Windows 11 + PowerShell
+# Quickstart - Windows 11 + PowerShell
 
-A precise, copy-paste walkthrough: build the airlock, store a secret, trust the
-local CA, point a test client at the proxy, and route a real AI agent so it only
-ever sees a dummy key.
+A precise, copy-paste walkthrough: install the airlock, store a secret, trust
+the local CA, point a test client at the proxy, and route a real AI agent so it
+only ever sees a dummy key.
 
-Every command below is the real CLI. `node dist/index.js <cmd>` is the canonical
-invocation; the package also installs an `airlock` bin pointing at
-`dist/index.js`, and `npm start` / `npm run airlock` are shortcuts. This guide
-uses `node dist/index.js` throughout so it works the moment the build finishes.
+Every command below uses the installed `airlock` CLI. In a source checkout,
+`npm start`, `npm run airlock`, or `node dist/index.js <cmd>` run the same
+entrypoint after `npm install && npm run build`.
 
-> **Prerequisites:** Windows 11, **Node ≥ 20**, PowerShell. DPAPI sealing uses
+> **Prerequisites:** Windows 11, **Node >= 20**, PowerShell. DPAPI sealing uses
 > `powershell.exe` under the hood, which is present by default.
 
 ---
 
-## 1. Build
+## 1. Install
 
 ```powershell
-npm install
-npm run build
+npm install -g credential-airlock
 ```
 
 Sanity-check your environment:
 
 ```powershell
-node dist/index.js doctor
+airlock doctor
 ```
 
 You should see your platform, the data dir
@@ -37,7 +35,7 @@ the DPAPI self-test fails, the vault can't seal — fix that before continuing.
 ## 2. Initialize the vault
 
 ```powershell
-node dist/index.js init
+airlock init
 ```
 
 This creates the data dir, generates the Vault Data Key (VDK) and the local CA,
@@ -61,10 +59,10 @@ Two common shapes:
 ```powershell
 # Header mode (default): the proxy ADDS "Authorization: Bearer <real key>".
 # The agent doesn't even need to know a placeholder.
-node dist/index.js secret set openai --value "sk-REPLACE-ME" --host api.openai.com
+airlock secret set openai --value "sk-REPLACE-ME" --host api.openai.com
 
 # Placeholder mode: the agent uses a dummy you choose; the proxy swaps it.
-node dist/index.js secret set openai `
+airlock secret set openai `
   --value "sk-REPLACE-ME" `
   --host api.openai.com `
   --mode placeholder --placeholder __OPENAI__ --in-body
@@ -74,17 +72,17 @@ Avoid putting the real key in your shell history. Pipe it from stdin instead:
 
 ```powershell
 $env:OPENAI_REAL = "sk-REPLACE-ME"
-$env:OPENAI_REAL | node dist/index.js secret set openai --stdin --host api.openai.com
+$env:OPENAI_REAL | airlock secret set openai --stdin --host api.openai.com
 Remove-Item Env:\OPENAI_REAL
 ```
 
 Verify (this prints **metadata only** — never the value):
 
 ```powershell
-node dist/index.js secret list
+airlock secret list
 # • openai  [header]  -> api.openai.com  (placeholder __OPENAI__)
 
-node dist/index.js policy show
+airlock policy show
 ```
 
 ---
@@ -92,7 +90,7 @@ node dist/index.js policy show
 ## 4. Start the airlock
 
 ```powershell
-node dist/index.js start
+airlock start
 ```
 
 You'll see a banner like:
@@ -123,7 +121,7 @@ system-wide import.
 Get the path any time:
 
 ```powershell
-node dist/index.js ca
+airlock ca
 ```
 
 ### Option A — per-process env (Node clients)
@@ -154,7 +152,7 @@ Import-Certificate -FilePath (Join-Path $env:LOCALAPPDATA "CredentialAirlock\air
   -CertStoreLocation Cert:\CurrentUser\Root
 ```
 
-> **You usually don't need to do any of this by hand.** `node dist/index.js run`
+> **You usually don't need to do any of this by hand.** `airlock run`
 > and the control-panel launch toggle wire `NODE_EXTRA_CA_CERTS`,
 > `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, the proxy variables,
 > and `AIRLOCK_ACTIVE=1` automatically for the process they launch.
@@ -167,11 +165,11 @@ To wire your **current** shell by hand (e.g. to test with `curl`), print and
 apply the env:
 
 ```powershell
-node dist/index.js env
+airlock env
 # emits $env:HTTP_PROXY=..., $env:NODE_EXTRA_CA_CERTS=..., etc.
 
 # Apply it to THIS shell:
-node dist/index.js env | Out-String | Invoke-Expression
+airlock env | Out-String | Invoke-Expression
 ```
 
 Now exercise the firewall. A blocked host (not on the allowlist) is refused;
@@ -189,8 +187,8 @@ curl.exe https://example.com/
 Watch it happen live:
 
 ```powershell
-node dist/index.js audit --limit 10
-node dist/index.js audit --verify     # recompute the hash chain; should be ok:true
+airlock audit --limit 10
+airlock audit --verify     # recompute the hash chain; should be ok:true
 ```
 
 > Reset your shell when done: `Remove-Item Env:\HTTP_PROXY, Env:\HTTPS_PROXY,
@@ -208,7 +206,7 @@ pre-wired and it sees only dummies.
 ### One-off, from any shell
 
 ```powershell
-node dist/index.js run -- python my_agent.py
+airlock run -- python my_agent.py
 ```
 
 `run` starts the proxy (if not already running), launches the command with all
@@ -218,8 +216,8 @@ stopping the proxy afterward.
 ### Registered agent + control-panel toggle
 
 ```powershell
-node dist/index.js agent add --name "research-bot" --command "python" --arg "my_agent.py"
-node dist/index.js agent list
+airlock agent add --name "research-bot" --command "python" --arg "my_agent.py"
+airlock agent list
 ```
 
 Then in the control panel (`http://127.0.0.1:7800/?token=…`), flip the agent's
@@ -238,7 +236,7 @@ gets replaced in the `Authorization` header (and body, with `--in-body`):
 
 ```powershell
 $env:OPENAI_REAL = "sk-REPLACE-ME"
-$env:OPENAI_REAL | node dist/index.js secret set openai `
+$env:OPENAI_REAL | airlock secret set openai `
   --stdin --host api.openai.com `
   --mode placeholder --placeholder __OPENAI__ --in-body
 Remove-Item Env:\OPENAI_REAL
@@ -264,7 +262,7 @@ print(resp.choices[0].message.content)
 **Run it through the airlock:**
 
 ```powershell
-node dist/index.js run -- python my_agent.py
+airlock run -- python my_agent.py
 ```
 
 What happened end to end:
@@ -282,7 +280,7 @@ What happened end to end:
 Confirm:
 
 ```powershell
-node dist/index.js audit --limit 5
+airlock audit --limit 5
 ```
 
 > Prefer header mode (`--mode header`) when the SDK lets the proxy own the
@@ -297,7 +295,7 @@ If you'll ever move to another machine, configure the 2-of-3 recovery ceremony
 **now**, while you have the working vault:
 
 ```powershell
-node dist/index.js migrate setup --passphrase "correct horse battery staple"
+airlock migrate setup --passphrase "correct horse battery staple"
 ```
 
 This prints the **offline recovery share once** (`CA1-…`). Print it and store it
@@ -305,7 +303,7 @@ in a safe — it is never written to disk. To migrate later, copy the data dir t
 the new machine and run, **on the new machine**:
 
 ```powershell
-node dist/index.js migrate import --passphrase "correct horse battery staple" `
+airlock migrate import --passphrase "correct horse battery staple" `
   --offline-share "CA1-...." --delay 0
 ```
 

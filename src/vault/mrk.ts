@@ -1,7 +1,7 @@
 /**
  * Master Recovery Key (MRK) + Shamir share management for migration/recovery.
  *
- * SEPARATION OF POWERS (the core design requirement):
+ * SEPARATION OF POWERS (the brief's core requirement):
  *   - "use the key"  = daily, machine-bound, automatic. Uses VDK via vdk.seal.
  *                      The MRK is NEVER reconstructed during normal operation.
  *   - "move the key" = deliberate, human-bound. Needs K-of-N shares to rebuild
@@ -115,8 +115,10 @@ export async function setupMigration(
     vdkSalt: vdkSalt.toString('hex'),
     createdAt: new Date().toISOString(),
   };
-  writeJson(p.manifest, manifest);
-
+  // NOTE: the manifest is deliberately NOT persisted here. The caller must re-key
+  // the vault FIRST and write the manifest LAST (see Runtime.setupMigration), so a
+  // crash mid-ceremony never leaves a manifest whose vdkSalt describes a VDK the
+  // vault was never re-keyed to (which would be a silently-unrecoverable backup).
   return { result: { manifest, offlineShare }, vdk, vdkSalt };
 }
 

@@ -12,8 +12,25 @@ const LEVEL_ORDER: Record<Level, number> = { debug: 10, info: 20, warn: 30, erro
 
 let minLevel: Level = (process.env.AIRLOCK_LOG_LEVEL as Level) || 'info';
 
-// Redaction registry: live secret values that must be scrubbed from all output.
+// Redaction registry: live secret values (and their on-the-wire encodings) that
+// must be scrubbed from all output.
 const redactions = new Set<string>();
+// Derived caches, rebuilt only when the registry changes — so the hot paths
+// (scrubBuffer runs PER response-body chunk, scrub PER header/log line) never
+// re-encode the needle set on every call.
+let latin1Needles: string[] = []; // each redaction's UTF-8 bytes viewed as latin1
+let maxRedactionLen = 0; // longest redaction in UTF-8 bytes (sliding-window size)
+
+function rebuildDerived(): void {
+  latin1Needles = [];
+  maxRedactionLen = 0;
+  for (const s of redactions) {
+    if (!s) continue;
+    const buf = Buffer.from(s, 'utf8');
+    latin1Needles.push(buf.toString('latin1'));
+    if (buf.length > maxRedactionLen) maxRedactionLen = buf.length;
+  }
+}
 
 export function registerRedaction(value: string): void {
   if (!value) return;
@@ -26,10 +43,38 @@ export function registerRedaction(value: string): void {
   } catch {
     /* ignore */
   }
+  // Also register the on-the-wire latin1 form of the secret's UTF-8 bytes. Node
+  // delivers incoming HTTP header values as a latin1/binary string, so a secret
+  // containing any byte >= 0x80 would otherwise slip past the contiguous scrub()
+  // (which holds the UTF-8 code points). This makes scrub()/scrubHeader catch it.
+  try {
+    const wire = Buffer.from(value, 'utf8').toString('latin1');
+    if (wire !== value) redactions.add(wire);
+  } catch {
+    /* ignore */
+  }
+  // Lowercased form: Node lowercases incoming HTTP header names, so a mixed-case
+  // secret reflected as a header NAME would otherwise dodge the case-sensitive scrub.
+  try {
+    const lower = value.toLowerCase();
+    if (lower !== value) redactions.add(lower);
+  } catch {
+    /* ignore */
+  }
+  // Percent-encoded form: query-mode injection sends encodeURIComponent(value), and a
+  // reflective upstream could echo that back — register it so the scrubber catches it.
+  try {
+    const enc = encodeURIComponent(value);
+    if (enc !== value) redactions.add(enc);
+  } catch {
+    /* ignore */
+  }
+  rebuildDerived();
 }
 
 export function clearRedactions(): void {
   redactions.clear();
+  rebuildDerived();
 }
 
 export function scrub(input: string): string {
@@ -44,12 +89,7 @@ export function scrub(input: string): string {
 
 /** Longest registered secret in UTF-8 bytes (for sliding-window streaming scrub). */
 export function maxRedactionLength(): number {
-  let m = 0;
-  for (const s of redactions) {
-    const len = Buffer.byteLength(s, 'utf8');
-    if (len > m) m = len;
-  }
-  return m;
+  return maxRedactionLen;
 }
 
 /**
@@ -59,17 +99,31 @@ export function maxRedactionLength(): number {
  * proxy RESPONSE bodies so a reflective upstream can't echo an injected key back.
  */
 export function scrubBuffer(buf: Buffer): Buffer {
-  if (!redactions.size || buf.length === 0) return buf;
+  if (!latin1Needles.length || buf.length === 0) return buf;
   let s = buf.toString('latin1');
   let changed = false;
-  for (const secret of redactions) {
-    const needle = Buffer.from(secret, 'utf8').toString('latin1');
+  for (const needle of latin1Needles) {
     if (needle && s.includes(needle)) {
       s = s.split(needle).join('***REDACTED***');
       changed = true;
     }
   }
   return changed ? Buffer.from(s, 'latin1') : buf;
+}
+
+/**
+ * Byte-aware redaction for a latin1/binary string (e.g. an incoming HTTP header
+ * value, which Node delivers as latin1). Matches each secret's exact UTF-8 wire
+ * bytes mapped through latin1, so a non-ASCII secret is redacted from a header a
+ * reflective upstream echoes back. Complements scrub() (which matches code points).
+ */
+export function scrubLatin1(input: string): string {
+  if (!latin1Needles.length || !input) return input;
+  let out = input;
+  for (const needle of latin1Needles) {
+    if (needle && out.includes(needle)) out = out.split(needle).join('***REDACTED***');
+  }
+  return out;
 }
 
 function emit(level: Level, msg: string, extra?: Record<string, unknown>): void {

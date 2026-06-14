@@ -1,0 +1,94 @@
+name: release
+
+# Tag-driven release: build, full test, SBOM, checksums, SLSA provenance, and a
+# GitHub Release. Uses only first-party actions + the preinstalled gh CLI to keep
+# the release path's own supply chain minimal.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build a release for'
+        required: true
+
+permissions:
+  contents: write       # create the release + upload assets
+  id-token: write       # OIDC for build-provenance attestation
+  attestations: write   # write the provenance attestation
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      AIRLOCK_SEALER: passphrase
+      AIRLOCK_PASSPHRASE: ci-only-passphrase-not-a-real-secret-0123456789
+      AIRLOCK_NO_OPEN: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Build the TAG's tree, not the branch HEAD — so a workflow_dispatch
+          # re-release attests exactly what the tag points at.
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install, build, test, audit
+        run: |
+          npm ci
+          npm run build
+          npm run package:check
+          npm test
+          npm run audit
+
+      # Pack FIRST so the SBOM file isn't captured inside its own tarball.
+      - name: Pack publishable tarball
+        run: npm pack
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          PKG_NAME="$(node -p "require('./package.json').name")"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "$PKG_NAME@$PKG_VERSION is already published; skipping npm publish."
+            exit 0
+          fi
+          npm publish ./*.tgz --access public --provenance
+
+      - name: Generate SBOM (CycloneDX, production tree)
+        run: npx --yes @cyclonedx/cyclonedx-npm@latest --omit dev --output-format json --output-file sbom.cdx.json
+
+      - name: Compute SHA-256 checksums
+        run: |
+          shopt -s nullglob
+          sha256sum *.tgz sbom.cdx.json > SHA256SUMS.txt
+          echo "----- SHA256SUMS.txt -----"
+          cat SHA256SUMS.txt
+
+      - name: Attest build provenance (SLSA) for the tarball + SBOM
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: |
+            *.tgz
+            sbom.cdx.json
+
+      - name: Create / update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then TAG="${{ inputs.tag }}"; fi
+          echo "Releasing $TAG"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" *.tgz sbom.cdx.json SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" *.tgz sbom.cdx.json SHA256SUMS.txt \
+              --title "$TAG" --generate-notes --verify-tag
+          fi

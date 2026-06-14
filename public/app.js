@@ -12,8 +12,9 @@
 'use strict';
 
 /* =========================================================================
- * PRESETS — canonical copy. (public/presets.js is a non-served reference copy;
- * keep the two in sync.)
+ * PRESETS — the single, canonical provider list. Inlined here because the
+ * admin server serves only /index.html, /app.js and /style.css (see the STATIC
+ * map in src/admin/server.ts), so there is no separate presets file to drift.
  * ========================================================================= */
 const PRESETS = [
   {

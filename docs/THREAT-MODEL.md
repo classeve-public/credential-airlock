@@ -57,11 +57,10 @@ defended accordingly.
   nothing here; the key was never the leak vector for this attack.
 - **Compromise of the PROXY process itself (RCE, supply chain).** The proxy can
   unwrap real keys into its own memory, so it is the **crown jewel**. The
-  cautionary examples are the 2026 LiteLLM incident (an AI-gateway proxy
-  compromised via supply chain + a pre-auth SQL injection that exposed ~500,000
-  corporate identities because it concentrated long-lived credentials) and the
-  April 2026 Bitwarden-CLI npm attack that specifically hunted AI-assistant
-  credentials.
+  product brief cites the 2026 LiteLLM incident (an AI-gateway proxy compromised
+  via supply chain + a pre-auth SQL injection that exposed ~500,000 corporate
+  identities because it concentrated long-lived credentials) and the April 2026
+  Bitwarden-CLI npm attack that specifically hunted AI-assistant credentials.
   Mitigation lives in operations, not features: **minimal pinned dependencies,
   signed reproducible builds, run the proxy as its own unprivileged
   user/namespace, no inbound admin endpoint, and aggressive review of every
@@ -125,10 +124,12 @@ These are properties of the code as built, not aspirations:
 - **Per-secret host binding.** Injection checks `matchAnyHost(allowedHosts,
   host)` for each secret; a non-match injects nothing. Host globs are fully
   anchored, so `*.stripe.com` does not match `evil-stripe.com`.
-- **Upstream certificate validation.** When the proxy forwards an intercepted
+- **Credentials leave only over verified TLS.** When the proxy forwards an intercepted
   request to the real upstream it sets `rejectUnauthorized: true` — it verifies
   the **real** server's certificate. The local CA is used only to present a
-  trusted cert *to the agent*, never to accept a forged upstream.
+  trusted cert *to the agent*, never to accept a forged upstream. The plain-HTTP
+  plane refuses to inject a credential over cleartext to a non-loopback host, so a
+  hijacked agent cannot downgrade to `http://` to leak the key.
 - **Hash-chained, append-only audit with a tip anchor.** Each entry chains
   `SHA-256(prevHash || canonical(entry))`; an out-of-band `audit.tip.json` records
   the latest `{seq, hash}`, so `audit --verify` also detects **tail truncation**

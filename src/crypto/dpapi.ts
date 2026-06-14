@@ -1,5 +1,5 @@
 /**
- * Windows DPAPI sealer — the OS-native sealing primitive on Windows.
+ * Windows DPAPI sealer — the OS-native primitive named in the brief.
  *
  * Uses System.Security.Cryptography.ProtectedData (Protect/Unprotect) via
  * PowerShell, scope = CurrentUser, with app-specific secondary entropy. The

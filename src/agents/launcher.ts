@@ -7,6 +7,8 @@
  */
 import { spawn, ChildProcess } from 'child_process';
 import { AgentProfile, AgentRuntime } from '../types';
+import { winCommandLine } from '../util/wincmd';
+import { sanitizedEnv } from '../util/env';
 import { log } from '../util/logger';
 
 interface Running {
@@ -25,19 +27,30 @@ export class AgentLauncher {
     const existing = this.running.get(profile.id);
     if (existing && existing.runtime.status === 'running') return existing.runtime;
 
-    const env: NodeJS.ProcessEnv = { ...process.env, ...wiredEnv, ...(profile.env || {}) };
+    // Sanitized base: the untrusted agent must NOT inherit the vault-sealing
+    // passphrase (or sealer/home), only the proxy + CA vars wiredEnv adds.
+    const env: NodeJS.ProcessEnv = { ...sanitizedEnv(), ...wiredEnv, ...(profile.env || {}) };
     const logs: string[] = [];
     let child: ChildProcess;
     try {
-      child = spawn(profile.command, profile.args, {
-        cwd: profile.cwd || process.cwd(),
-        env,
-        // On Windows, npm-installed agent CLIs (npx/claude/aider) are .cmd shims that
-        // spawn() cannot launch without a shell. The command is operator-configured
-        // (loopback, token-authed), so the shell adds no new injection surface.
-        shell: process.platform === 'win32',
-        windowsHide: true,
-      });
+      // On Windows, npm-installed agent CLIs (npx/claude/aider) are .cmd shims that
+      // spawn() cannot launch without a shell. We build a correctly-quoted single
+      // command line and pass it with shell:true (avoiding Node's deprecated
+      // shell-with-args path, DEP0190). The command is operator-configured
+      // (loopback, token-authed), so the shell adds no new injection surface.
+      child =
+        process.platform === 'win32'
+          ? spawn(winCommandLine(profile.command, profile.args), {
+              cwd: profile.cwd || process.cwd(),
+              env,
+              shell: true,
+              windowsHide: true,
+            })
+          : spawn(profile.command, profile.args, {
+              cwd: profile.cwd || process.cwd(),
+              env,
+              windowsHide: true,
+            });
     } catch (e) {
       const rt: AgentRuntime = { id: profile.id, status: 'error', exitCode: null, lastError: String(e) };
       this.running.set(profile.id, { child: undefined as unknown as ChildProcess, runtime: rt, logs });
